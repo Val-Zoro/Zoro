@@ -1,4 +1,4 @@
-# How to use
+# How to start using
 1) Install Python if not already done --> (https://www.python.org/ftp/python/3.12.4/python-3.12.4-amd64.exe)
 2) Run the installer, **make sure to check the box that says: "Add python.exe to PATH"**
 3) Download the software ._. obv
@@ -8,3 +8,7 @@
 7) Run the file, enter: "main.py"
 
 **Restart your pc if errors happen**
+
+# Using it
+First, you'll need to enter your account username and password in the file named: "config.ini"
+Then run the file (if you have 2fa, you'll need to enter that too)
