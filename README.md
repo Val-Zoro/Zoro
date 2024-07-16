@@ -12,3 +12,7 @@
 # Using it
 First, you'll need to enter your account username and password in the file named: "config.ini"
 Then run the file (if you have 2fa, you'll need to enter that too)
+
+# Working on
+Persistent login
+Browser login for better login with 2fa
