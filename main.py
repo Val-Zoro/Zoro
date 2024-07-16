@@ -108,19 +108,15 @@ def MainGui(vp: int = 0, rp: int = 0):
 	skin1_image = dailyshop['Skins']['skin1']['skin1_image']
 	skin1_name = dailyshop['Skins']['skin1']['skin1_name']
 	skin1_price = dailyshop['Skins']['skin1']['skin1_price']
-	skin1_video = dailyshop['Skins']['skin1']['skin1_video']
 	skin2_image = dailyshop['Skins']['skin2']['skin2_image']
 	skin2_name = dailyshop['Skins']['skin2']['skin2_name']
 	skin2_price = dailyshop['Skins']['skin2']['skin2_price']
-	skin2_video = dailyshop['Skins']['skin2']['skin2_video']
 	skin3_image = dailyshop['Skins']['skin3']['skin3_image']
 	skin3_name = dailyshop['Skins']['skin3']['skin3_name']
 	skin3_price = dailyshop['Skins']['skin3']['skin3_price']
-	skin3_video = dailyshop['Skins']['skin3']['skin3_video']
 	skin4_image = dailyshop['Skins']['skin4']['skin4_image']
 	skin4_name = dailyshop['Skins']['skin4']['skin4_name']
 	skin4_price = dailyshop['Skins']['skin4']['skin4_price']
-	skin4_video = dailyshop['Skins']['skin4']['skin4_video']
 	valorant_points_amount = vp
 	radianite_points_amount = rp
 	'''
@@ -514,7 +510,6 @@ def val_shop_checker():
 	session = sesh()
 	session.headers = headers
 	session.mount('https://', TLSAdapter())
-	json2 = [val_uuid]
 
 	with requests.get(f"https://pd.na.a.pvp.net/store/v2/storefront/{val_user_id}",
 	                  headers=internal_api_headers) as r:
@@ -533,7 +528,7 @@ def val_shop_checker():
 	bundles_uuid = []  # list of current bundles
 	bundle_prices = []
 	feautured_bundles = data['FeaturedBundle']
-	time = (feautured_bundles['BundleRemainingDurationInSeconds'])
+	time = convert_time(feautured_bundles['BundleRemainingDurationInSeconds'])
 	if len(feautured_bundles['Bundles']) > 1:
 		bundles = [feautured_bundles['Bundles'][0], feautured_bundles['Bundles'][1]]
 		for element in bundles:
@@ -560,7 +555,6 @@ def val_shop_checker():
 			bundle_prices.append(sum(all_prices))  # price of the single bundle
 
 	# todo night market fix
-
 	nm_price = []
 	nm_offers = []
 	nm_images = []
@@ -585,6 +579,7 @@ def val_shop_checker():
 		nm_offers.append(nmdata['data']['displayName'])  # names of daily items
 		nm_images.append(nmdata['data']['displayIcon'])  # images of daily items
 	'''
+
 	# daily shop
 	singleweapons_prices = []
 	daily_shop = data['SkinsPanelLayout']
@@ -986,7 +981,6 @@ def run_in_game(cache=None, our_team_colour: str = None):
 	got_players = False
 	freeze_prints = False
 	message_list = []
-	failed = []
 	player_data = {}
 	player_name_cache = []
 	team_blue_player_list = {}
@@ -1129,8 +1123,6 @@ def run_pregame(data: dict):
 	player_data = {}
 	threads = []
 	rank_list = {}
-	party_number = 1
-	party_tracker = {}
 
 	def fetch_player_data(player_id, platform):
 		get_playerdata_from_uuid(player_id, platform)
@@ -1302,9 +1294,8 @@ def check_if_user_in_pregame(send_message: bool = False):
 
 
 def get_userdata_from_token() -> tuple[str, str]:
-	with requests.get("https://auth.riotgames.com/userinfo", headers=internal_api_headers) as r:
+	with requests.get("https://auth.riotgames.com/userinfo", headers={"Authorization": f"Bearer {val_access_token}"}) as r:
 		try:
-			print("this", r.json())
 			account_name = r.json()["acct"]["game_name"]
 			account_tag = r.json()["acct"]["tag_line"]
 			return account_name, account_tag
