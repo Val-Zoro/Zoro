@@ -643,7 +643,7 @@ def val_shop_checker():
 		night_market_table = Table(box=box.HEAVY_EDGE, title='[bold]NIGHT MARKET[/bold]', show_header=True, header_style='bold #2070b2')
 		night_market_table.add_row(table_three)
 
-		table = Table(box=box.HEAVY_EDGE, show_header=True, title=f" ╔══ [bold]Saucywan'S DAILY STORE[/bold]\n ╠════ Valorant Points: [#2070b2]{vp} VP [/#2070b2] \n ╚══════ Radianite Points: [#2070b2] {rp} R [/#2070b2]")
+		table = Table(box=box.HEAVY_EDGE, show_header=True, title=f" ╔══ [bold]{get_userdata_from_id(val_uuid).capitalize()}'S DAILY STORE[/bold]\n ╠════ Valorant Points: [#2070b2]{vp} VP [/#2070b2] \n ╚══════ Radianite Points: [#2070b2] {rp} R [/#2070b2]")
 		table.add_column('DAILY ITEMS', justify='center')
 		table.add_column('BUNDLES', justify='center')
 		table.add_row(table_one, table_two)
