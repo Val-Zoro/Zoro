@@ -7,7 +7,7 @@
 6) Type: "pip install -r requirements.txt" (This will download all of the needed packages / imports)
 7) Run the file, enter: "main.py"
 
-**Restart your pc if errors happen**
+**Restart your pc if errors happens**
 
 # Using it
 - First, you'll need to enter your account username and password in the file named: "config.ini"
