@@ -480,13 +480,13 @@ def get_headers():
 		"X-Riot-Entitlements-JWT": f"{val_entitlements_token}",
 		"Authorization": f"Bearer {val_access_token}",
 		"X-Riot-ClientPlatform": "ewogICAgInBsYXRmb3JtVHlwZSI6ICJQQyIsCiAgICAicGxhdGZvcm1PUyI6ICJXaW5kb3dzIiwKICAgICJwbGF0Zm9ybU9TVmVyc2lvbiI6ICIxMC4wLjE5MDQyLjEuMjU2LjY0Yml0IiwKICAgICJwbGF0Zm9ybUNoaXBzZXQiOiAiVW5rbm93biIKfQ==",
-		"X-Riot-ClientVersion": "release-09.00-shipping-28-2628993"
+		"X-Riot-ClientVersion": "release-09.01-shipping-21-2669223"
 	}
 	headers_console = {
 		"X-Riot-Entitlements-JWT": f"{val_entitlements_token}",
 		"Authorization": f"Bearer {val_access_token}",
 		"X-Riot-ClientPlatform": "ewogICAgInBsYXRmb3JtVHlwZSI6ICJwbGF5c3RhdGlvbiIsCiAgICAicGxhdGZvcm1PUyI6ICJQUzUiLAogICAgInBsYXRmb3JtT1NWZXJzaW9uIjogIiIsCiAgICAicGxhdGZvcm1DaGlwc2V0IjogIlVua25vd24iLAogICAgInBsYXRmb3JtRGV2aWNlIjogIiIKfQ==",
-		"X-Riot-ClientVersion": "release-09.00-shipping-22-2607432"
+		"X-Riot-ClientVersion": "release-09.01-shipping-21-2669223"
 	}
 
 	internal_api_headers = headers_pc.copy()
