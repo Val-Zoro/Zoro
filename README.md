@@ -4,7 +4,7 @@
 3) Download the software ._. obv
 4) Extract it
 5) Open cmd in that folder (Being where the .py file is)
-6) Type: "pip install -r requirements.txt" (This will download all of the needed packages / imports)
+6) Type: "pip install -r requirements.txt" (This will download all the needed packages / imports)
 7) Run the file, enter: "main.py"
 
 **Restart your pc if errors happens**

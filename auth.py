@@ -1,4 +1,3 @@
-import asyncio
 import contextlib
 import ctypes
 import json
@@ -11,7 +10,6 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 from urllib.parse import parse_qsl, urlsplit
 import os
 import aiohttp
-import atexit
 
 
 class RiotAuthError(Exception):
@@ -57,6 +55,7 @@ class RiotAuth:
 			"ecdsa_secp384r1_sha384",
 			"rsa_pss_rsae_sha384",
 			"rsa_pkcs1_sha384",
+			"rsa_pkcs1_sha384"
 			"rsa_pss_rsae_sha512",
 			"rsa_pkcs1_sha512",
 			"rsa_pkcs1_sha1",  # will get ignored and won't be negotiated
@@ -73,8 +72,6 @@ class RiotAuth:
 		self.expires_at: int = 0
 		self.user_id: Optional[str] = None
 		self.entitlements_token: Optional[str] = None
-		self.load_cookies()
-		atexit.register(self.save_cookies)
 
 	@staticmethod
 	def create_riot_auth_ssl_ctx() -> ssl.SSLContext:
@@ -108,10 +105,19 @@ class RiotAuth:
 			ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1  # deprecated since 3.10
 		ssl_ctx.set_alpn_protocols(["http/1.1"])
 		ssl_ctx.options |= 1 << 19  # SSL_OP_NO_ENCRYPT_THEN_MAC
+		ssl_ctx.options |= 1 << 14  # SSL_OP_NO_TICKET
 		libssl.SSL_CTX_set_ciphersuites(ssl_ctx_addr, RiotAuth.CIPHERS13.encode())
 		libssl.SSL_CTX_set_cipher_list(ssl_ctx_addr, RiotAuth.CIPHERS.encode())
 		# setting SSL_CTRL_SET_SIGALGS_LIST
 		libssl.SSL_CTX_ctrl(ssl_ctx_addr, 98, 0, RiotAuth.SIGALGS.encode())
+		# setting SSL_CTRL_SET_GROUPS_LIST
+		libssl.SSL_CTX_ctrl(ssl_ctx_addr, 92, 0, ":".join(
+			(
+				"x25519",
+				"secp256r1",
+				"secp384r1",
+			)
+		).encode())
 
 		# print([cipher["name"] for cipher in ssl_ctx.get_ciphers()])
 		return ssl_ctx

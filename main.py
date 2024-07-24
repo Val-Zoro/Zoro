@@ -1,8 +1,11 @@
 import asyncio
+import logging
 import threading
 import time
 import os
 import configparser
+
+import ValLib
 import colorama
 
 import aioconsole
@@ -48,8 +51,14 @@ args = vars(parser.parse_args())
 
 OUTPUT_PATH = Path(__file__).parent
 ASSETS_PATH = OUTPUT_PATH / Path("./assets")
-
 auth = RiotAuth()
+
+logger = logging.getLogger('ValorantLoader')
+handler = logging.FileHandler(
+	filename='ValorantLoader.log', encoding='utf-8', mode='w')
+handler.setFormatter(logging.Formatter(
+	'%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
+logger.addHandler(handler)
 
 
 def url_image(link, size, skinname):
@@ -120,63 +129,63 @@ def MainGui(vp: int = 0, rp: int = 0):
 	valorant_points_amount = vp
 	radianite_points_amount = rp
 	'''
-	def NightMarketPage():
-		offer1 = [dailyshop['NightMarket']['skin1']['name'], dailyshop['NightMarket']['skin1']['price'], dailyshop['NightMarket']['skin1']['icon']]
-		offer2 = [dailyshop['NightMarket']['skin2']['name'], dailyshop['NightMarket']['skin2']['price']]
-		offer3 = [dailyshop['NightMarket']['skin3']['name'], dailyshop['NightMarket']['skin3']['price']]
-		offer4 = [dailyshop['NightMarket']['skin4']['name'], dailyshop['NightMarket']['skin4']['price']]
-		offer5 = [dailyshop['NightMarket']['skin5']['name'], dailyshop['NightMarket']['skin5']['price']]
-		offer6 = [dailyshop['NightMarket']['skin6']['name'], dailyshop['NightMarket']['skin6']['price']]
-		nmwind = Tk()
-		nmwind.geometry("779x417")
-		nmwind.configure(bg="#081527")
-		nmwind.title('Night Market')
-		canvas = Canvas(
-			nmwind,
-			bg="#081527",
-			height=417,
-			width=779,
-			bd=0,
-			highlightthickness=0,
-			relief="ridge"
-		)
-		canvas.create_text(
-			250,
-			10,
-			anchor="nw",
-			text="NIGHT.MARKET",
-			fill="white",
-			font=("Passion One Bold", 48 * -1)
-		)
-		canvas.create_text(
-			320,
-			60,
-			anchor="nw",
-			text=f"ends in TOT hours",
-			fill="white",
-			font=("Passion One Bold", 20 * -1)
-		)
-		canvas.place(x=0, y=0)
-		if offer1[0] == 'NONE':
-			canvas.create_text(
-				120,
-				200,
-				anchor="nw",
-				text="NIGHT MARKET NOT AVAILABLE",
-				fill="#DC3D4B",
-				font=("VALORANT", 32 * -1)
-			)
-		else:
-			# page work in progess
-			print(offer1[0], '|', offer1[1])
-			print(offer2[0], '|', offer2[1])
-			print(offer3[0], '|', offer3[1])
-			print(offer4[0], '|', offer4[1])
-			print(offer5[0], '|', offer5[1])
-			print(offer6[0], '|', offer6[1])
-		nmwind.resizable(False, False)
-		nmwind.mainloop()
-	'''
+    def NightMarketPage():
+        offer1 = [dailyshop['NightMarket']['skin1']['name'], dailyshop['NightMarket']['skin1']['price'], dailyshop['NightMarket']['skin1']['icon']]
+        offer2 = [dailyshop['NightMarket']['skin2']['name'], dailyshop['NightMarket']['skin2']['price']]
+        offer3 = [dailyshop['NightMarket']['skin3']['name'], dailyshop['NightMarket']['skin3']['price']]
+        offer4 = [dailyshop['NightMarket']['skin4']['name'], dailyshop['NightMarket']['skin4']['price']]
+        offer5 = [dailyshop['NightMarket']['skin5']['name'], dailyshop['NightMarket']['skin5']['price']]
+        offer6 = [dailyshop['NightMarket']['skin6']['name'], dailyshop['NightMarket']['skin6']['price']]
+        nmwind = Tk()
+        nmwind.geometry("779x417")
+        nmwind.configure(bg="#081527")
+        nmwind.title('Night Market')
+        canvas = Canvas(
+            nmwind,
+            bg="#081527",
+            height=417,
+            width=779,
+            bd=0,
+            highlightthickness=0,
+            relief="ridge"
+        )
+        canvas.create_text(
+            250,
+            10,
+            anchor="nw",
+            text="NIGHT.MARKET",
+            fill="white",
+            font=("Passion One Bold", 48 * -1)
+        )
+        canvas.create_text(
+            320,
+            60,
+            anchor="nw",
+            text=f"ends in TOT hours",
+            fill="white",
+            font=("Passion One Bold", 20 * -1)
+        )
+        canvas.place(x=0, y=0)
+        if offer1[0] == 'NONE':
+            canvas.create_text(
+                120,
+                200,
+                anchor="nw",
+                text="NIGHT MARKET NOT AVAILABLE",
+                fill="#DC3D4B",
+                font=("VALORANT", 32 * -1)
+            )
+        else:
+            # page work in progess
+            print(offer1[0], '|', offer1[1])
+            print(offer2[0], '|', offer2[1])
+            print(offer3[0], '|', offer3[1])
+            print(offer4[0], '|', offer4[1])
+            print(offer5[0], '|', offer5[1])
+            print(offer6[0], '|', offer6[1])
+        nmwind.resizable(False, False)
+        nmwind.mainloop()
+    '''
 	canvas = Canvas(
 		window,
 		bg="#081527",
@@ -208,18 +217,18 @@ def MainGui(vp: int = 0, rp: int = 0):
 	)
 
 	'''
-	button_1 = Button(
-		image=image_image_0,
-		borderwidth=0,
-		highlightthickness=0,
-		command=lambda: NightMarketPage(),
-		relief="flat"
-	)
-	button_1.place(
-		x=155.0,
-		y=362.0,
-	)
-	'''
+    button_1 = Button(
+        image=image_image_0,
+        borderwidth=0,
+        highlightthickness=0,
+        command=lambda: NightMarketPage(),
+        relief="flat"
+    )
+    button_1.place(
+        x=155.0,
+        y=362.0,
+    )
+    '''
 
 	image_image_1 = url_image(bundle_image, 'big', bundle_name)
 	canvas.create_image(
@@ -435,6 +444,10 @@ def MainGui(vp: int = 0, rp: int = 0):
 		jsf.truncate(0)
 
 
+def get_user_agent() -> str:
+	return RiotAuth.RIOT_CLIENT_USER_AGENT
+
+
 async def log_in() -> bool:
 	global region, val_token, val_access_token, val_user_id, val_entitlements_token, val_uuid
 	acc = config['LOGIN']
@@ -448,28 +461,33 @@ async def log_in() -> bool:
 	if region.lower() not in ["na", "latam", "br", "eu", "ap", "kr"]:
 		print(colorama.Fore.LIGHTRED_EX + f'INFO: Region is not Valid in the file named "config.ini"\n   Valid regions are "na", "latam", "br", "eu", "ap", "kr"\n' + colorama.Style.RESET_ALL)
 
-	CREDS = username, password
-	multifactor_status = await auth.authorize(*CREDS)
-	if multifactor_status:
-		print(colorama.Fore.LIGHTRED_EX + "WARNING: This account requires multi-factor authentication. Because of anti bot login, the 2FA code WILL NOT be sent to your email.\nYou will require to log in on a separate device via 'https://authenticate.riotgames.com'. Once you have the code, enter it below" + colorama.Style.RESET_ALL)
-	while multifactor_status is True:
-		# Fetching the code must be asynchronous or blocking
-		code = await aioconsole.ainput("Input 2fa code: ")
-		try:
-			await auth.authorize_mfa(code)
-			break
-		except RiotAuthError:
-			print("Invalid 2fa code, please try again")
-	val_token = auth.token_type
+	logged_in = False
+	if not logged_in:
+		multifactor_status = await auth.authorize(username, password)
+		if multifactor_status:
+			try:
+				user = ValLib.User(username, password)
+				ValLib.authenticate(user)
+			except:
+				pass
+			print(colorama.Fore.LIGHTRED_EX + "Re-enter the code" + colorama.Style.RESET_ALL)
+		while multifactor_status is True:
+			# Fetching the code must be asynchronous or blocking
+			code = await aioconsole.ainput("Input 2fa code: ")
+			try:
+				await auth.authorize_mfa(code)
+				break
+			except RiotAuthError:
+				print("Invalid 2fa code, please try again")
+	val_token = "Bearer"
 	val_access_token = auth.access_token
-	val_user_id = auth.user_id
 	val_entitlements_token = auth.entitlements_token
 	val_uuid = auth.user_id
 
 	'''
-		with open("creds.json", "w") as f:
-			json.dump({'val_token': val_token, 'val_access_token': val_access_token, 'val_uuid': val_uuid, 'val_entitlements_token': val_entitlements_token}, f, indent=4)
-	'''
+        with open("creds.json", "w") as f:
+            json.dump({'val_token': val_token, 'val_access_token': val_access_token, 'val_uuid': val_uuid, 'val_entitlements_token': val_entitlements_token}, f, indent=4)
+    '''
 
 	return True
 
@@ -479,6 +497,7 @@ def get_headers():
 
 	with requests.get("https://valorant-api.com/v1/version") as r:
 		client_version = r.json()["data"]["riotClientVersion"]
+		riotClientBuild = r.json()["data"]["riotClientBuild"]
 
 	headers_pc = {
 		"X-Riot-Entitlements-JWT": f"{val_entitlements_token}",
@@ -492,6 +511,8 @@ def get_headers():
 		"X-Riot-ClientPlatform": "ewogICAgInBsYXRmb3JtVHlwZSI6ICJwbGF5c3RhdGlvbiIsCiAgICAicGxhdGZvcm1PUyI6ICJQUzUiLAogICAgInBsYXRmb3JtT1NWZXJzaW9uIjogIiIsCiAgICAicGxhdGZvcm1DaGlwc2V0IjogIlVua25vd24iLAogICAgInBsYXRmb3JtRGV2aWNlIjogIiIKfQ==",
 		"X-Riot-ClientVersion": client_version
 	}
+
+	RiotAuth.RIOT_CLIENT_USER_AGENT = f"RiotClient/{riotClientBuild} %s (Windows;10;;Professional, x64)"
 
 	internal_api_headers = headers_pc.copy()
 	internal_api_headers_console = headers_console.copy()
@@ -527,37 +548,38 @@ def val_shop_checker():
 
 	vp = GetPoints.json()["Balances"]["85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741"]
 	rp = GetPoints.json()["Balances"]["e59aa87c-4cbf-517a-5983-6e81511be9b7"]
-
-	# bundles
-	bundles_uuid = []  # list of current bundles
-	bundle_prices = []
-	feautured_bundles = data['FeaturedBundle']
-	time = convert_time(feautured_bundles['BundleRemainingDurationInSeconds'])
-	if len(feautured_bundles['Bundles']) > 1:
-		bundles = [feautured_bundles['Bundles'][0], feautured_bundles['Bundles'][1]]
-		for element in bundles:
-			bundle_uuid = element['DataAssetID']
-			bundles_uuid.append(bundle_uuid)
-			n = 0
-			all_prices = []
-			for i in range(len(element['Items'])):
-				bundle_item_price = element['Items'][n]['DiscountedPrice']
-				all_prices.append(bundle_item_price)
-				n = n + 1
-			bundle_prices.append(sum(all_prices))  # price of the bundles
-	else:
-		bundles = [feautured_bundles['Bundle']]
-		for element in bundles:
-			bundle_uuid = element['DataAssetID']
-			bundles_uuid.append(bundle_uuid)
-			n = 0
-			all_prices = []
-			for i in range(len(element['Items'])):
-				bundle_item_price = element['Items'][n]['DiscountedPrice']
-				all_prices.append(bundle_item_price)
-				n = n + 1
-			bundle_prices.append(sum(all_prices))  # price of the single bundle
-
+	try:
+		# bundles
+		bundles_uuid = []  # list of current bundles
+		bundle_prices = []
+		feautured_bundles = data['FeaturedBundle']
+		time = convert_time(feautured_bundles['BundleRemainingDurationInSeconds'])
+		if len(feautured_bundles['Bundles']) > 1:
+			bundles = [feautured_bundles['Bundles'][0], feautured_bundles['Bundles'][1]]
+			for element in bundles:
+				bundle_uuid = element['DataAssetID']
+				bundles_uuid.append(bundle_uuid)
+				n = 0
+				all_prices = []
+				for i in range(len(element['Items'])):
+					bundle_item_price = element['Items'][n]['DiscountedPrice']
+					all_prices.append(bundle_item_price)
+					n = n + 1
+				bundle_prices.append(sum(all_prices))  # price of the bundles
+		else:
+			bundles = [feautured_bundles['Bundle']]
+			for element in bundles:
+				bundle_uuid = element['DataAssetID']
+				bundles_uuid.append(bundle_uuid)
+				n = 0
+				all_prices = []
+				for i in range(len(element['Items'])):
+					bundle_item_price = element['Items'][n]['DiscountedPrice']
+					all_prices.append(bundle_item_price)
+					n = n + 1
+				bundle_prices.append(sum(all_prices))  # price of the single bundle
+	except:
+		pass
 	# todo night market fix
 	nm_price = []
 	nm_offers = []
@@ -565,24 +587,24 @@ def val_shop_checker():
 	nm_skins_id = []
 	use_nm = True
 	'''
-	try:
-		for i in data['BonusStore']['BonusStoreOffers']:
-			[nm_price.append(k) for k in i['DiscountCosts'].values()]  # night market prices
-		for i in data['BonusStore']['BonusStoreOffers']:
-			[nm_skins_id.append(k['ItemID']) for k in i['Offer']['Rewards']]  # night market offers
-	except KeyError:
-		use_nm = False
-		for i in range(6):
-			nm_skins_id.append('NONE')
-		for i in range(6):
-			nm_price.append('NONE')
+    try:
+        for i in data['BonusStore']['BonusStoreOffers']:
+            [nm_price.append(k) for k in i['DiscountCosts'].values()]  # night market prices
+        for i in data['BonusStore']['BonusStoreOffers']:
+            [nm_skins_id.append(k['ItemID']) for k in i['Offer']['Rewards']]  # night market offers
+    except KeyError:
+        use_nm = False
+        for i in range(6):
+            nm_skins_id.append('NONE')
+        for i in range(6):
+            nm_price.append('NONE')
 
-	for nmskinid in nm_skins_id:
-		with requests.get(f'https://valorant-api.com/v1/weapons/skinlevels/{nmskinid}') as r:
-			nmdata = r.json()
-		nm_offers.append(nmdata['data']['displayName'])  # names of daily items
-		nm_images.append(nmdata['data']['displayIcon'])  # images of daily items
-	'''
+    for nmskinid in nm_skins_id:
+        with requests.get(f'https://valorant-api.com/v1/weapons/skinlevels/{nmskinid}') as r:
+            nmdata = r.json()
+        nm_offers.append(nmdata['data']['displayName'])  # names of daily items
+        nm_images.append(nmdata['data']['displayIcon'])  # images of daily items
+    '''
 
 	# daily shop
 	singleweapons_prices = []
@@ -935,7 +957,6 @@ def get_playerdata_from_uuid(user_id: str, platform: str = "PC"):
 
 def get_members_of_party_from_uuid(player_id: str):
 	player_list = []
-	print(f"Called: {player_id}")
 	with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(player_id)}", headers=internal_api_headers) as r:
 		try:
 			if r.status_code == 400:
@@ -943,11 +964,9 @@ def get_members_of_party_from_uuid(player_id: str):
 				if is_console:
 					with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(player_id)}", headers=internal_api_headers_console) as r2:
 						party_id = r2.json()['CurrentPartyID']
-						print("this: ", r2.json())
 						input()
 
 			else:
-				print("this:", r.json())
 				party_id = r.json()['CurrentPartyID']
 				input()
 
@@ -956,17 +975,14 @@ def get_members_of_party_from_uuid(player_id: str):
 			party_id = None
 
 	if party_id is not None:
-		print(party_id)
 		with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/parties/{party_id}", headers=internal_api_headers) as r:
 			party_data = r.json()
-			print(party_data)
 		for member in party_data["Members"]:
 			player_name = get_userdata_from_id(str(member["Subject"]))
 			player_list.append(player_name)
 	else:
 		player_list.clear()
 		player_list.append("Player is not in a party. Player could be offline.")
-	print(player_list)
 	return player_list, party_id
 
 
@@ -1153,14 +1169,14 @@ def run_pregame(data: dict):
 				player_level = ally_player["PlayerIdentity"]["AccountLevel"]
 				# party_members, party_id = get_members_of_party_from_uuid(str(ally_player["PlayerIdentity"]["Subject"]))
 				'''
-				if party_id:
-					if party_id not in party_tracker:
-						party_tracker[party_id] = party_number
-						party_number += 1
-					party_num = party_tracker[party_id]
-				else:
-					party_num = None
-				'''
+                if party_id:
+                    if party_id not in party_tracker:
+                        party_tracker[party_id] = party_number
+                        party_number += 1
+                    party_num = party_tracker[party_id]
+                else:
+                    party_num = None
+                '''
 				party_num = False
 				try:
 					agent_name = get_agentdata_from_id(ally_player["CharacterID"])
@@ -1315,21 +1331,25 @@ async def main():
 	if logged_in:
 		name, tag = get_userdata_from_token()
 		get_headers()
-		print(f"\nYou have been logged in! Welcome, {name.capitalize()}")
+		while True:
+			try:
+				print(f"\nYou have been logged in! Welcome, {name.capitalize()}")
 
-		user_input = input("(1) Check shop, (2) In-game loader\n")
-		if user_input == "1":
-			# Get valorant shop
-			val_shop_checker()
-		elif user_input == "2":
-			while True:
-				# Check if user is selecting an agent / pregame
-				check_if_user_in_pregame(False)
+				user_input = input("(1) Check shop, (2) In-game loader\n")
+				if user_input == "1":
+					# Get valorant shop
+					val_shop_checker()
+				elif user_input == "2":
+					while True:
+						# Check if user is selecting an agent / pregame
+						check_if_user_in_pregame(False)
 
-				# BETA party system
-				get_party()
+						# BETA party system
+						get_party()
+			except Exception as e:
+				print(f"An Error Has Happened!\nError: {e} | {e.__traceback__}")
 
 
 if __name__ == "__main__":
-
 	asyncio.run(main())
+
