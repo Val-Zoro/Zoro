@@ -15,4 +15,4 @@
 
 # Working on
 - Persistent login
-- Browser login for better login with 2fa
+- ~~Browser login for better login with 2fa~~
