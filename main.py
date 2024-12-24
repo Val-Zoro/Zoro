@@ -267,7 +267,7 @@ async def val_shop_checker():
 def main_gui(vp, rp, current_bundles, bundles_images, bundle_prices, skin_names, skin_images, singleweapons_prices, nm_offers, nm_price, nm_images):
 	root = Tk()
 	root.title("Valorant Shop Checker")
-	root.configure(bg="#1e1e1e")  # Dark background for a modern look
+	root.configure(bg="#1e1e1e")  # Dark background
 
 	# Styling with ttk themes
 	style = ttk.Style()
