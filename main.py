@@ -1,4 +1,4 @@
-VERSION = "v2.0.3"
+VERSION = "v2.0.4"
 
 import asyncio
 import threading
@@ -13,9 +13,12 @@ import json
 import requests
 import ssl
 
-# LOCAL IMPORT
-import log
-
+from platform import system, version
+from wmi import WMI
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_OAEP, AES
+from Crypto.Random import get_random_bytes
+from Crypto.Util.Padding import pad
 from base64 import b64encode, b64decode
 from io import StringIO
 from colorama import Fore, Style
@@ -25,6 +28,7 @@ from pathlib import Path
 from tkinter import Tk, ttk, Canvas, Frame, Scrollbar
 from tkinter import Label as tkLabel
 from PIL import Image, ImageTk
+from datetime import datetime, timedelta
 
 val_token = ""
 val_access_token = ""
@@ -44,6 +48,118 @@ config.read("/".join([parentdir, "config.ini"]))
 
 OUTPUT_PATH = Path(__file__).parent
 ASSETS_PATH = OUTPUT_PATH / Path("./assets")
+
+pub_key = ("-----BEGIN PUBLIC KEY-----\n"
+           "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqIKYJWIl6Wif397yi3P+\n"
+           "YnVZ9ExhGvuUpECU+BhpnJkP1pHJldurnKfpIdGhsiTblzlFvMS5y3wdKNmtpIW7\n"
+           "8KVC8bL7FwLShmMBQNkEL4GvZfgGHYbAlJOXOiWuqDk/CS28ccZyEzAkxT4WY4H2\n"
+           "BWVVBPax72ksJL2oMOxYJVZg2w3P3LbWNfcrgAC1/HPVzmuYka0IDo9TevbCwccC\n"
+           "yNS3GlJ6g4E7yp8RIsFyEoq7DueHuK+zkvgpmb5eLRg8Ssq9t6bCcnx6Sl2hb4n/\n"
+           "5OmRNvohCFM3WpP1vAdNxrsQT8uSuExbH4g7uDT/l5+ZdpxytzEzGdvPezmPiXhL\n"
+           "5QIDAQAB\n"
+           "-----END PUBLIC KEY-----")
+
+
+class Logger:
+	def __init__(self, app_name: str, file_name: str, file_ending: str = ".log"):
+		self.app_name = app_name
+		self.file_name = file_name
+		self.file_ending = file_ending
+
+		self.VERSION = "v1.5.2"
+
+		self.LEVELS = {1: "Error", 2: "Warning", 3: "Info", 4: "Debug"}
+		self.MAX_FILE_SIZE = 1 * 1024 * 1024  # 1MB
+		self.LOG_TIME_INTERVAL = timedelta(days=1)  # 1 day
+
+		self.key = None
+		self.hwid = None
+
+	def __get_sys_hwid(self):
+		c = WMI()
+		self.hwid = c.Win32_ComputerSystemProduct()[0].UUID, c.Win32_BaseBoard()[0].SerialNumber
+
+	def _encrypt_message(self, message: str) -> str:
+		cipher_rsa = PKCS1_OAEP.new(self.key)
+
+		aes_key = get_random_bytes(16)
+
+		cipher_aes = AES.new(aes_key, AES.MODE_CBC)
+
+		encrypted_message = cipher_aes.encrypt(pad(message.encode('utf-8'), AES.block_size))
+
+		encrypted_aes_key = cipher_rsa.encrypt(aes_key)
+
+		encrypted_message = b64encode(encrypted_aes_key + cipher_aes.iv + encrypted_message).decode('utf-8')
+
+		return encrypted_message
+
+	def _timestamp(self):
+		return datetime.now()
+
+	def _format_message(self, level: int, message: str) -> str:
+		level_name = self.LEVELS.get(level, "Unknown")
+		timestamp_str = self._timestamp().strftime("%Y-%m-%d %H:%M:%S")
+		return f"{timestamp_str} - {level_name}: {message}"
+
+	def _get_log_filename(self) -> str:
+		now = self._timestamp()
+		return f"{self.file_name}_{now.strftime('%Y-%m-%d')}.{self.file_ending}"
+
+	def _is_file_large(self, full_log_file_name: str) -> bool:
+		return os.path.exists(full_log_file_name) and os.path.getsize(full_log_file_name) >= self.MAX_FILE_SIZE
+
+	def _log_file_header(self):
+		return (f"\n"
+		        f"============================================================\n"
+		        f"Application Name:    {self.app_name}\n"
+		        f"Version:             {self.VERSION}\n"
+		        f"Log File Created:    {self._timestamp()}\n"
+		        f"Log Levels:          [DEBUG | INFO | WARNING | ERROR]\n"
+		        f"------------------------------------------------------------\n"
+		        f"Hostname:            [Null]\n"
+		        f"Operating System:    [{system()}, {version()}]\n"
+		        f"HWID:                {self.hwid}\n"
+		        f"------------------------------------------------------------\n"
+		        f"Log Format:          [Timestamp] [Log Level] [Message]\n\n"
+		        f"============================================================\n\n"
+		        f"Log Start:\n")
+
+	def load_public_key(self, key: str):
+		self.key = RSA.import_key(key)
+
+	def log(self, level: int, message: str) -> int:
+		if level not in self.LEVELS:
+			return -1  # Invalid level
+
+		current_time = self._timestamp()
+		log_filename = self._get_log_filename()
+
+		if "/" in log_filename:
+			file_path = log_filename.split("/")[0]
+			if not os.path.exists(file_path):
+				os.mkdir(file_path)
+
+		# Check if the file needs to be rotated
+		if self._is_file_large(log_filename) or (os.path.exists(log_filename) and (current_time - datetime.fromtimestamp(os.path.getmtime(log_filename))) > self.LOG_TIME_INTERVAL):
+			log_filename = self._get_log_filename()  # Ensure new file name is generated
+
+		try:
+			self.__get_sys_hwid()
+
+			if os.path.exists(log_filename):
+				with open(log_filename, "a") as f:
+					f.write(self._encrypt_message(self._format_message(level, message)) + "\n")
+			else:
+				with open(log_filename, "w") as f:
+					f.write(self._encrypt_message(self._log_file_header()) + "\n")
+					f.write(self._encrypt_message(self._format_message(level, message)) + "\n")
+
+		except IOError as e:
+			print(f"Error writing to log file: {e}")
+			return -2  # File I/O error
+
+		return 1  # Success
 
 
 def convert_time(sec):
@@ -757,7 +873,7 @@ def get_party_symbol(number: int):
 	]
 	reset = "\033[0m"
 
-	coloured_party_symbol = f"{party_colours[number-1]}{party_symbol}{reset} "
+	coloured_party_symbol = f"{party_colours[number - 1]}{party_symbol}{reset} "
 	return coloured_party_symbol
 
 
@@ -944,7 +1060,7 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 		except Exception as e:
 			await log_in()
 			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-			log.log("logs/ValorantLoader", 1, traceback_str)
+			logger.log(1, traceback_str)
 			print("this")
 			print(e)
 
@@ -1084,7 +1200,7 @@ async def run_pregame(data: dict):
 
 		except Exception as e:
 			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-			log.log("logs/ValorantLoader", 1, traceback_str)
+			logger.log(1, traceback_str)
 			raise e
 			print("this 1")
 			print(e)
@@ -1223,7 +1339,7 @@ async def get_party():
 		except Exception as e:
 			await log_in()
 			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-			log.log("logs/ValorantLoader", 1, traceback_str)
+			logger.log(1, traceback_str)
 
 
 # print("Re-logging In!")
@@ -1268,18 +1384,21 @@ def get_userdata_from_token() -> tuple[str, str]:
 			account_tag = r.json()["acct"]["tag_line"]
 			return account_name, account_tag
 		except Exception as e:
+			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+			logger.log(3, f"Failed to get account name/tag: {e}")
 			return "None", "None"
 
 
 async def main():
 	clear_console()
 	print(colorama.Fore.BLUE + "Welcome" + colorama.Style.RESET_ALL)
+
 	print("One moment while we sign you in...\n")
 
 	logged_in = await log_in()
 	if logged_in:
 		name, tag = get_userdata_from_token()
-		log.log("logs/ValorantLoader", 3, f"Logged in as: {name}#{tag}")
+		logger.log(3, f"Logged in as: {name}#{tag}")
 		while True:
 			try:
 				print(f"\nYou have been logged in! Welcome, {name.capitalize()}")
@@ -1298,7 +1417,7 @@ async def main():
 						await get_party()
 			except Exception as e:
 				traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-				log.log("logs/ValorantLoader", 1, traceback_str)
+				logger.log(1, traceback_str)
 				print(f"An Error Has Happened!\n{traceback_str}")
 	else:
 		time.sleep(5)
@@ -1307,4 +1426,7 @@ async def main():
 if __name__ == "__main__":
 	clear_console()
 	colorama.init(autoreset=True)
+	logger = Logger("Valorant Loader", "logs/ValorantLoader", ".log")
+	logger.load_public_key(pub_key)
+
 	asyncio.run(main())
