@@ -1,36 +1,31 @@
+VERSION = "v2.0.0"
+
 import asyncio
-import logging
 import threading
 import time
 import os
 import configparser
-
-import ValLib
+import traceback
+import sys
+import aiohttp
+import logger
 import colorama
-
-import aioconsole
 import json
-import urllib.request
-import argparse
 import requests
+import ssl
 
-from requests import session as sesh, get
-from ssl import PROTOCOL_TLSv1_2
-from auth import RiotAuth, RiotAuthError
-from urllib3 import PoolManager
+from base64 import b64encode, b64decode
+from io import StringIO
+from colorama import Fore, Style
+from auth import RiotAuth
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry  # noqa
 from pathlib import Path
-from tkinter import Tk, Canvas, Entry, Label, Button, PhotoImage
+from tkinter import ttk, Tk
 from PIL import ImageTk, Image
-from io import BytesIO
-from datetime import date
-from rich.table import Table, box
-from rich.console import Console
 
 val_token = ""
 val_access_token = ""
-val_user_id = ""
 val_entitlements_token = ""
 val_uuid = ""
 region = ""
@@ -38,53 +33,17 @@ region = ""
 internal_api_headers = {}
 internal_api_headers_console = {}
 
-cache = {}
-our_team_colour = ""
+password = ""
+port = ""
 
 config = configparser.ConfigParser()
 parentdir = os.path.dirname(__file__)
 config.read("/".join([parentdir, "config.ini"]))
 
-parser = argparse.ArgumentParser()
-parser.add_argument("-g", "--gui", help="Display or not the GUI window")
-args = vars(parser.parse_args())
-
 OUTPUT_PATH = Path(__file__).parent
 ASSETS_PATH = OUTPUT_PATH / Path("./assets")
-auth = RiotAuth()
 
-logger = logging.getLogger('ValorantLoader')
-handler = logging.FileHandler(
-	filename='ValorantLoader.log', encoding='utf-8', mode='w')
-handler.setFormatter(logging.Formatter(
-	'%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
-logger.addHandler(handler)
-
-
-def url_image(link, size, skinname):
-	longs = ['vandal', 'phantom', 'operator', 'shorty', 'frenzy', 'sheriff', 'ghost', 'stinger', 'spectre', 'bucky', 'judge', 'bulldog', 'marshall', 'ares', 'odin', 'guardian']
-	theweapon = (skinname.split(" ")[-1:][0]).lower()
-	checklong = theweapon in longs
-	if checklong:  # weapons
-		pixels_x, pixels_y = 150, 45
-	else:
-		if size == 'big':  # bundle
-			pixels_x, pixels_y = 547, 237
-		else:  # melees
-			pixels_x, pixels_y = 100, 45
-	with urllib.request.urlopen(link) as u:
-		raw_data = u.read()
-	image = Image.open(BytesIO(raw_data)).resize((pixels_x, pixels_y))
-	return ImageTk.PhotoImage(image)
-
-
-def relative_to_assets(path: str) -> Path:
-	return ASSETS_PATH / Path(path)
-
-
-class TLSAdapter(HTTPAdapter):
-	def init_poolmanager(self, connections, maxsize, block=False):
-		self.poolmanager = PoolManager(num_pools=connections, maxsize=maxsize, block=block, ssl_version=PROTOCOL_TLSv1_2)
+logger.log(str(OUTPUT_PATH.name), 3, "Started")
 
 
 def convert_time(sec):
@@ -97,399 +56,108 @@ def convert_time(sec):
 	return "%d:%02d:%02d:%02d" % (days, hours, minutes, sec)
 
 
-def price_retriver(skinUuid, offers_data):
-	for row in offers_data["Offers"]:
-		if row["OfferID"] == skinUuid:
-			for cost in row["Cost"]:
-				return row["Cost"][cost]
+def create_riot_auth_ssl_ctx() -> ssl.SSLContext:
+	import sys
+	import ctypes
+	from typing import Optional
+	import contextlib
+	import warnings
+
+	ssl_ctx = ssl.create_default_context()
+
+	# https://github.com/python/cpython/issues/88068
+	addr = id(ssl_ctx) + sys.getsizeof(object())
+	ssl_ctx_addr = ctypes.cast(addr, ctypes.POINTER(ctypes.c_void_p)).contents
+
+	libssl: Optional[ctypes.CDLL] = None
+	if sys.platform.startswith("win32"):
+		for dll_name in (
+				"libssl-3.dll",
+				"libssl-3-x64.dll",
+				"libssl-1_1.dll",
+				"libssl-1_1-x64.dll",
+		):
+			with contextlib.suppress(FileNotFoundError, OSError):
+				libssl = ctypes.CDLL(dll_name)
+				break
+	elif sys.platform.startswith(("linux", "darwin")):
+		libssl = ctypes.CDLL(ssl._ssl.__file__)  # type: ignore
+
+	if libssl is None:
+		raise NotImplementedError(
+			"Failed to load libssl. Your platform or distribution might be unsupported, please open an issue."
+		)
+
+	with warnings.catch_warnings():
+		warnings.filterwarnings("ignore", category=DeprecationWarning)
+		ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1  # deprecated since 3.10
+	ssl_ctx.set_alpn_protocols(["http/1.1"])
+	ssl_ctx.options |= 1 << 19  # SSL_OP_NO_ENCRYPT_THEN_MAC
+	ssl_ctx.options |= 1 << 14  # SSL_OP_NO_TICKET
+	libssl.SSL_CTX_set_ciphersuites(ssl_ctx_addr, RiotAuth.CIPHERS13.encode())
+	libssl.SSL_CTX_set_cipher_list(ssl_ctx_addr, RiotAuth.CIPHERS.encode())
+	# setting SSL_CTRL_SET_SIGALGS_LIST
+	libssl.SSL_CTX_ctrl(ssl_ctx_addr, 98, 0, RiotAuth.SIGALGS.encode())
+	# setting SSL_CTRL_SET_GROUPS_LIST
+	libssl.SSL_CTX_ctrl(ssl_ctx_addr, 92, 0, ":".join(
+		(
+			"x25519",
+			"secp256r1",
+			"secp384r1",
+		)
+	).encode())
+
+	# print([cipher["name"] for cipher in ssl_ctx.get_ciphers()])
+	return ssl_ctx
 
 
-def MainGui(vp: int = 0, rp: int = 0):
-	window = Tk()
-	window.geometry("779x417")
-	window.configure(bg="#081527")
-	window.title('Valorant Store Watcher')
+async def get_user_data_from_riot_client():
+	global password, port
 
-	dailyshop = json.load(open("/".join([parentdir, 'dailyshop.json'])))
-	bundle_name = dailyshop['Bundle']['bundle_name']
-	bundle_image = dailyshop['Bundle']['bundle_image']
-	bundle_price = dailyshop['Bundle']['bundle_price']
-	skin1_image = dailyshop['Skins']['skin1']['skin1_image']
-	skin1_name = dailyshop['Skins']['skin1']['skin1_name']
-	skin1_price = dailyshop['Skins']['skin1']['skin1_price']
-	skin2_image = dailyshop['Skins']['skin2']['skin2_image']
-	skin2_name = dailyshop['Skins']['skin2']['skin2_name']
-	skin2_price = dailyshop['Skins']['skin2']['skin2_price']
-	skin3_image = dailyshop['Skins']['skin3']['skin3_image']
-	skin3_name = dailyshop['Skins']['skin3']['skin3_name']
-	skin3_price = dailyshop['Skins']['skin3']['skin3_price']
-	skin4_image = dailyshop['Skins']['skin4']['skin4_image']
-	skin4_name = dailyshop['Skins']['skin4']['skin4_name']
-	skin4_price = dailyshop['Skins']['skin4']['skin4_price']
-	valorant_points_amount = vp
-	radianite_points_amount = rp
-	'''
-    def NightMarketPage():
-        offer1 = [dailyshop['NightMarket']['skin1']['name'], dailyshop['NightMarket']['skin1']['price'], dailyshop['NightMarket']['skin1']['icon']]
-        offer2 = [dailyshop['NightMarket']['skin2']['name'], dailyshop['NightMarket']['skin2']['price']]
-        offer3 = [dailyshop['NightMarket']['skin3']['name'], dailyshop['NightMarket']['skin3']['price']]
-        offer4 = [dailyshop['NightMarket']['skin4']['name'], dailyshop['NightMarket']['skin4']['price']]
-        offer5 = [dailyshop['NightMarket']['skin5']['name'], dailyshop['NightMarket']['skin5']['price']]
-        offer6 = [dailyshop['NightMarket']['skin6']['name'], dailyshop['NightMarket']['skin6']['price']]
-        nmwind = Tk()
-        nmwind.geometry("779x417")
-        nmwind.configure(bg="#081527")
-        nmwind.title('Night Market')
-        canvas = Canvas(
-            nmwind,
-            bg="#081527",
-            height=417,
-            width=779,
-            bd=0,
-            highlightthickness=0,
-            relief="ridge"
-        )
-        canvas.create_text(
-            250,
-            10,
-            anchor="nw",
-            text="NIGHT.MARKET",
-            fill="white",
-            font=("Passion One Bold", 48 * -1)
-        )
-        canvas.create_text(
-            320,
-            60,
-            anchor="nw",
-            text=f"ends in TOT hours",
-            fill="white",
-            font=("Passion One Bold", 20 * -1)
-        )
-        canvas.place(x=0, y=0)
-        if offer1[0] == 'NONE':
-            canvas.create_text(
-                120,
-                200,
-                anchor="nw",
-                text="NIGHT MARKET NOT AVAILABLE",
-                fill="#DC3D4B",
-                font=("VALORANT", 32 * -1)
-            )
-        else:
-            # page work in progess
-            print(offer1[0], '|', offer1[1])
-            print(offer2[0], '|', offer2[1])
-            print(offer3[0], '|', offer3[1])
-            print(offer4[0], '|', offer4[1])
-            print(offer5[0], '|', offer5[1])
-            print(offer6[0], '|', offer6[1])
-        nmwind.resizable(False, False)
-        nmwind.mainloop()
-    '''
-	canvas = Canvas(
-		window,
-		bg="#081527",
-		height=417,
-		width=779,
-		bd=0,
-		highlightthickness=0,
-		relief="ridge"
-	)
-
-	canvas.place(x=0, y=0)
-
-	canvas.create_text(
-		22.0,
-		280.0,
-		anchor="nw",
-		text="VALORANT",
-		fill="#DC3D4B",
-		font=("VALORANT", 64 * -1)
-	)
-
-	canvas.create_text(
-		197.0,
-		342.0,
-		anchor="nw",
-		text="SHOP",
-		fill="#DC3D4B",
-		font=("VALORANT", 64 * -1)
-	)
-
-	'''
-    button_1 = Button(
-        image=image_image_0,
-        borderwidth=0,
-        highlightthickness=0,
-        command=lambda: NightMarketPage(),
-        relief="flat"
-    )
-    button_1.place(
-        x=155.0,
-        y=362.0,
-    )
-    '''
-
-	image_image_1 = url_image(bundle_image, 'big', bundle_name)
-	canvas.create_image(
-		295.0,
-		146.0,
-		image=image_image_1
-	)
-
-	image_image_2 = PhotoImage(
-		file=relative_to_assets("valopoints.png"))
-	canvas.create_image(
-		610.0,
-		180.0,
-		image=image_image_2
-	)
-
-	canvas.create_text(
-		628.0,
-		175.0,
-		anchor="nw",
-		text=skin2_price,
-		fill="#FFFFFF",
-		font=("VALORANT", 13 * -1)
-	)
-
-	image_image_3 = PhotoImage(
-		file=relative_to_assets("valopoints.png"))
-	canvas.create_image(
-		610.0,
-		300.0,
-		image=image_image_3
-	)
-
-	canvas.create_text(
-		628.0,
-		295.0,
-		anchor="nw",
-		text=skin3_price,
-		fill="#FFFFFF",
-		font=("VALORANT", 13 * -1)
-	)
-
-	canvas.create_text(
-		601.0,
-		375.0,
-		anchor="nw",
-		text=skin3_name,
-		fill="#FFFFFF",
-		font=("VALORANT", 12 * -1)
-	)
-
-	canvas.create_text(
-		417.0,
-		375.0,
-		anchor="nw",
-		text=skin4_name,
-		fill="#FFFFFF",
-		font=("VALORANT", 12 * -1)
-	)
-
-	image_image_4 = url_image(skin1_image, 'melee', skin1_name)
-	canvas.create_image(
-		663.0,
-		73.0,
-		image=image_image_4
-	)
-
-	image_image_5 = PhotoImage(file=relative_to_assets("valopoints.png"))
-	canvas.create_image(
-		610.0,
-		50.0,
-		image=image_image_5
-	)
-
-	canvas.create_text(
-		628.0,
-		45.0,
-		anchor="nw",
-		text=skin1_price,
-		fill="#FFFFFF",
-		font=("VALORANT", 13 * -1)
-	)
-
-	canvas.create_text(
-		681.0,
-		11.0,
-		anchor="nw",
-		text=date.today().strftime("%d/%m/%Y"),
-		fill="#FFFFFF",
-		font=("VALORANT", 12 * -1)
-	)
-
-	image_image_6 = PhotoImage(
-		file=relative_to_assets("valopoints.png"))
-	canvas.create_image(
-		64.0,
-		366.0,
-		image=image_image_6
-	)
-
-	image_image_7 = PhotoImage(
-		file=relative_to_assets("valopoints.png"))
-	canvas.create_image(
-		535.0,
-		244.0,
-		image=image_image_7
-	)
-
-	image_image_8 = PhotoImage(
-		file=relative_to_assets("radianite.png"))
-	canvas.create_image(
-		64.0,
-		391.0,
-		image=image_image_8
-	)
-
-	canvas.create_text(
-		82.0,
-		361.0,
-		anchor="nw",
-		text=valorant_points_amount,
-		fill="#FFFFFF",
-		font=("VALORANT", 13 * -1)
-	)
-
-	image_image_9 = PhotoImage(
-		file=relative_to_assets("valopoints.png"))
-	canvas.create_image(
-		419.0,
-		300.0,
-		image=image_image_9
-	)
-
-	canvas.create_text(
-		437.0,
-		295.0,
-		anchor="nw",
-		text=skin4_price,
-		fill="#FFFFFF",
-		font=("VALORANT", 13 * -1)
-	)
-
-	canvas.create_text(
-		486.0,
-		237.0,
-		anchor="nw",
-		text=bundle_price,
-		fill="#FFFFFF",
-		font=("VALORANT", 15 * -1)
-	)
-
-	canvas.create_text(
-		82.0,
-		386.0,
-		anchor="nw",
-		text=radianite_points_amount,
-		fill="#FFFFFF",
-		font=("VALORANT", 13 * -1)
-	)
-
-	canvas.create_text(
-		40.0,
-		229.0,
-		anchor="nw",
-		text=bundle_name,
-		fill="#FFFFFF",
-		font=("VALORANT", 24 * -1)
-	)
-
-	canvas.create_text(
-		601.0,
-		103.0,
-		anchor="nw",
-		text=skin1_name,
-		fill="#FFFFFF",
-		font=("VALORANT", 12 * -1)
-	)
-
-	canvas.create_text(
-		601.0,
-		236.0,
-		anchor="nw",
-		text=skin2_name,
-		fill="#FFFFFF",
-		font=("VALORANT", 12 * -1)
-	)
-
-	image_image_10 = url_image(skin2_image, '', skin2_name)
-	canvas.create_image(
-		668.0,
-		209.0,
-		image=image_image_10
-	)
-
-	image_image_11 = url_image(skin3_image, '', skin3_name)
-	canvas.create_image(
-		670.9556884765625,
-		341.7883071899414,
-		image=image_image_11
-	)
-
-	image_image_12 = url_image(skin4_image, '', skin4_name)
-	canvas.create_image(
-		476.0,
-		341.0,
-		image=image_image_12
-	)
-
-	window.resizable(False, False)
-	window.mainloop()
-
-	with open("/".join([parentdir, 'dailyshop.json']), 'r+') as jsf:
-		jsf.truncate(0)
-
-
-def get_user_agent() -> str:
-	return RiotAuth.RIOT_CLIENT_USER_AGENT
+	# get lockfile password
+	file_path = os.getenv("localappdata")
+	with open(f"{file_path}\\Riot Games\\Riot Client\\Config\\lockfile", "r") as f:
+		lockfile_data = f.read()
+	# Base 64 encode the password
+	password = b64encode(f"riot:{str(lockfile_data.split(':')[3])}".encode("ASCII")).decode()
+	# Get the port the WS is running on
+	port = str(lockfile_data.split(":")[2])
+	if password is not None:
+		# Make secure connection with the WS
+		conn = aiohttp.TCPConnector(ssl=create_riot_auth_ssl_ctx())
+		async with aiohttp.ClientSession(
+				connector=conn, raise_for_status=True
+		) as session:
+			# Get user login tokens
+			try:
+				async with session.get(
+						f"https://127.0.0.1:{port}/entitlements/v1/token",
+						headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, ssl=False
+				) as r:
+					return_data = await r.json()
+			except aiohttp.client.ClientResponseError:
+				print("Please make sure Riot Client is open!")
+				return None
+		return return_data["accessToken"], return_data["token"], return_data["subject"]
+	else:
+		raise Exception("Error")
 
 
 async def log_in() -> bool:
-	global region, val_token, val_access_token, val_user_id, val_entitlements_token, val_uuid
-	acc = config['LOGIN']
-	username = acc['riot_username']
-	password = acc['password']
-	region = acc['region']
+	global val_token, val_access_token, val_user_id, val_entitlements_token, val_uuid
+	user_data = await get_user_data_from_riot_client()
 
-	if username == "xxx" or password == "xxx" or region == "xxx":
-		print(colorama.Fore.LIGHTRED_EX + f'INFO: Enter your login details in the file named "config.ini"' + colorama.Style.RESET_ALL)
-		return False
-	if region.lower() not in ["na", "latam", "br", "eu", "ap", "kr"]:
-		print(colorama.Fore.LIGHTRED_EX + f'INFO: Region is not Valid in the file named "config.ini"\n   Valid regions are "na", "latam", "br", "eu", "ap", "kr"\n' + colorama.Style.RESET_ALL)
+	if user_data is not None:
+		val_token = "Bearer"
+		val_access_token = user_data[0]
+		val_entitlements_token = user_data[1]
+		val_uuid = user_data[2]
+		val_user_id = user_data[2]
 
-	logged_in = False
-	if not logged_in:
-		multifactor_status = await auth.authorize(username, password)
-		if multifactor_status:
-			try:
-				user = ValLib.User(username, password)
-				ValLib.authenticate(user)
-			except:
-				pass
-			print(colorama.Fore.LIGHTRED_EX + "Re-enter the code" + colorama.Style.RESET_ALL)
-		while multifactor_status is True:
-			# Fetching the code must be asynchronous or blocking
-			code = await aioconsole.ainput("Input 2fa code: ")
-			try:
-				await auth.authorize_mfa(code)
-				break
-			except RiotAuthError:
-				print("Invalid 2fa code, please try again")
-	val_token = "Bearer"
-	val_access_token = auth.access_token
-	val_entitlements_token = auth.entitlements_token
-	val_uuid = auth.user_id
+		get_headers()
 
-	'''
-        with open("creds.json", "w") as f:
-            json.dump({'val_token': val_token, 'val_access_token': val_access_token, 'val_uuid': val_uuid, 'val_entitlements_token': val_entitlements_token}, f, indent=4)
-    '''
-
-	return True
+		return True
+	return False
 
 
 def get_headers():
@@ -497,226 +165,191 @@ def get_headers():
 
 	with requests.get("https://valorant-api.com/v1/version") as r:
 		client_version = r.json()["data"]["riotClientVersion"]
-		riotClientBuild = r.json()["data"]["riotClientBuild"]
 
 	headers_pc = {
 		"X-Riot-Entitlements-JWT": f"{val_entitlements_token}",
 		"Authorization": f"Bearer {val_access_token}",
-		"X-Riot-ClientPlatform": "ewogICAgInBsYXRmb3JtVHlwZSI6ICJQQyIsCiAgICAicGxhdGZvcm1PUyI6ICJXaW5kb3dzIiwKICAgICJwbGF0Zm9ybU9TVmVyc2lvbiI6ICIxMC4wLjE5MDQyLjEuMjU2LjY0Yml0IiwKICAgICJwbGF0Zm9ybUNoaXBzZXQiOiAiVW5rbm93biIKfQ==",
-		"X-Riot-ClientVersion": client_version
+		"X-Riot-ClientPlatform": "ew0KCSJwbGF0Zm9ybVR5cGUiOiAiUEMiLA0KCSJwbGF0Zm9ybU9TIjogIldpbmRvd3MiLA0KCSJwbGF0Zm9ybU9TVmVyc2lvbiI6ICIxMC4wLjE5MDQyLjEuMjU2LjY0Yml0IiwNCgkicGxhdGZvcm1DaGlwc2V0IjogIlVua25vd24iDQp9",
+		"X-Riot-ClientVersion": client_version,
+		"Content-Type": "application/json"
 	}
 	headers_console = {
 		"X-Riot-Entitlements-JWT": f"{val_entitlements_token}",
 		"Authorization": f"Bearer {val_access_token}",
-		"X-Riot-ClientPlatform": "ewogICAgInBsYXRmb3JtVHlwZSI6ICJwbGF5c3RhdGlvbiIsCiAgICAicGxhdGZvcm1PUyI6ICJQUzUiLAogICAgInBsYXRmb3JtT1NWZXJzaW9uIjogIiIsCiAgICAicGxhdGZvcm1DaGlwc2V0IjogIlVua25vd24iLAogICAgInBsYXRmb3JtRGV2aWNlIjogIiIKfQ==",
+		"X-Riot-ClientPlatform": "ew0KCSJwbGF0Zm9ybVR5cGUiOiAiUEMiLA0KCSJwbGF0Zm9ybU9TIjogIldpbmRvd3MiLA0KCSJwbGF0Zm9ybU9TVmVyc2lvbiI6ICIxMC4wLjE5MDQyLjEuMjU2LjY0Yml0IiwNCgkicGxhdGZvcm1DaGlwc2V0IjogIlVua25vd24iDQp9",
 		"X-Riot-ClientVersion": client_version
 	}
-
-	RiotAuth.RIOT_CLIENT_USER_AGENT = f"RiotClient/{riotClientBuild} %s (Windows;10;;Professional, x64)"
 
 	internal_api_headers = headers_pc.copy()
 	internal_api_headers_console = headers_console.copy()
 
 
-# VALORANT STORE WATCHER
 def val_shop_checker():
-	# Get skins
-
-	client_version: str = requests.get("https://valorant-api.com/v1/version").json()["data"]["riotClientBuild"]
-	RiotAuth.RIOT_CLIENT_USER_AGENT = f"RiotClient/{client_version} %s (Windows;10;;Professional, x64)"
-
-	headers = {
-		'User-Agent': f"RiotClient/{client_version} %s (Windows;10;;Professional, x64)",
-		'Authorization': f'Bearer {val_access_token}',
-	}
-
-	get_headers()
-
-	session = sesh()
-	session.headers = headers
-	session.mount('https://', TLSAdapter())
-
-	with requests.get(f"https://pd.na.a.pvp.net/store/v2/storefront/{val_user_id}",
-	                  headers=internal_api_headers) as r:
-		data = r.json()
-	weapon_fetch = get(f'https://valorant-api.com/v1/weapons/skinlevels')
-	weapon_fetch = weapon_fetch.json()
-	of_data = get(f"https://pd.{region}.a.pvp.net/store/v1/offers/", headers=internal_api_headers)
-	offers_data = of_data.json()
-	# with open('offersdata.json', 'a') as f: f.write(json.dumps(offers_data, indent = 4))
-	GetPoints = get(f"https://pd.na.a.pvp.net/store/v1/wallet/{val_uuid}", headers=internal_api_headers)
-
-	vp = GetPoints.json()["Balances"]["85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741"]
-	rp = GetPoints.json()["Balances"]["e59aa87c-4cbf-517a-5983-6e81511be9b7"]
 	try:
-		# bundles
-		bundles_uuid = []  # list of current bundles
+		get_headers()
+
+		# Fetch data from API
+		response = requests.post(f"https://pd.na.a.pvp.net/store/v3/storefront/{val_user_id}",
+								 headers=internal_api_headers, json={})
+		data = response.json()
+
+		with open("data.json", "w") as f:
+			json.dump(data, f, indent=4)
+
+		weapon_fetch = requests.get(f'https://valorant-api.com/v1/weapons/skinlevels')
+		weapon_data = weapon_fetch.json()
+
+		GetPoints = requests.get(f"https://pd.na.a.pvp.net/store/v1/wallet/{val_uuid}", headers=internal_api_headers)
+		GetPoints_data = GetPoints.json()
+
+		vp = GetPoints_data["Balances"]["85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741"]
+		rp = GetPoints_data["Balances"]["e59aa87c-4cbf-517a-5983-6e81511be9b7"]
+
+		# Bundles handling
+		bundles_uuid = []
 		bundle_prices = []
-		feautured_bundles = data['FeaturedBundle']
-		time = convert_time(feautured_bundles['BundleRemainingDurationInSeconds'])
-		if len(feautured_bundles['Bundles']) > 1:
-			bundles = [feautured_bundles['Bundles'][0], feautured_bundles['Bundles'][1]]
+		featured_bundles = data.get('FeaturedBundle', {})
+		time = convert_time(featured_bundles.get('BundleRemainingDurationInSeconds', 0))
+
+		if 'Bundles' in featured_bundles:
+			bundles = featured_bundles['Bundles'][:2]  # Limit to 2 bundles
 			for element in bundles:
-				bundle_uuid = element['DataAssetID']
+				bundle_uuid = element.get('DataAssetID', '')
 				bundles_uuid.append(bundle_uuid)
-				n = 0
-				all_prices = []
-				for i in range(len(element['Items'])):
-					bundle_item_price = element['Items'][n]['DiscountedPrice']
-					all_prices.append(bundle_item_price)
-					n = n + 1
-				bundle_prices.append(sum(all_prices))  # price of the bundles
-		else:
-			bundles = [feautured_bundles['Bundle']]
-			for element in bundles:
-				bundle_uuid = element['DataAssetID']
-				bundles_uuid.append(bundle_uuid)
-				n = 0
-				all_prices = []
-				for i in range(len(element['Items'])):
-					bundle_item_price = element['Items'][n]['DiscountedPrice']
-					all_prices.append(bundle_item_price)
-					n = n + 1
-				bundle_prices.append(sum(all_prices))  # price of the single bundle
-	except:
-		pass
-	# todo night market fix
-	nm_price = []
-	nm_offers = []
-	nm_images = []
-	nm_skins_id = []
-	use_nm = True
-	'''
-    try:
-        for i in data['BonusStore']['BonusStoreOffers']:
-            [nm_price.append(k) for k in i['DiscountCosts'].values()]  # night market prices
-        for i in data['BonusStore']['BonusStoreOffers']:
-            [nm_skins_id.append(k['ItemID']) for k in i['Offer']['Rewards']]  # night market offers
-    except KeyError:
-        use_nm = False
-        for i in range(6):
-            nm_skins_id.append('NONE')
-        for i in range(6):
-            nm_price.append('NONE')
+				all_prices = [item.get('DiscountedPrice', 0) for item in element.get('Items', [])]
+				bundle_prices.append(sum(all_prices))
 
-    for nmskinid in nm_skins_id:
-        with requests.get(f'https://valorant-api.com/v1/weapons/skinlevels/{nmskinid}') as r:
-            nmdata = r.json()
-        nm_offers.append(nmdata['data']['displayName'])  # names of daily items
-        nm_images.append(nmdata['data']['displayIcon'])  # images of daily items
-    '''
+		# Skins handling
+		all_skin_uuids = []
+		singleweapons_prices = []
+		daily_shop = data.get("SkinsPanelLayout", {}).get("SingleItemStoreOffers", [])
 
-	# daily shop
-	singleweapons_prices = []
-	daily_shop = data['SkinsPanelLayout']
-	daily_items = daily_shop['SingleItemOffers']  # list of daily items
-	for skin in daily_items:
-		for row in weapon_fetch["data"]:
-			if skin == row["uuid"]:
-				skin_price = price_retriver(skin, offers_data)
-				singleweapons_prices.append(skin_price)  # prices of daily items
+		for item in daily_shop:
+			all_skin_uuids.append(str(item.get("OfferID", '')))
+			singleweapons_prices.append(str(item.get("Cost", {}).get("85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741", 0)))
 
-	skin_names = []
-	skin_images = []
-	skin_videos = []
-	for item in daily_items:
-		with session.get(f'https://valorant-api.com/v1/weapons/skinlevels/{item}', headers=headers) as r:
-			data = r.json()
-		skin_names.append(data['data']['displayName'])  # names of daily items
-		skin_images.append(data['data']['displayIcon'])  # images of daily items
-		skin_videos.append(data['data']['streamedVideo'])  # videos of daily items
+		skin_names, skin_images, skin_videos = [], [], []
+		for item in all_skin_uuids:
+			skin_data = requests.get(f'https://valorant-api.com/v1/weapons/skinlevels/{item}').json()
+			skin_names.append(skin_data.get('data', {}).get('displayName', 'Unknown'))
+			skin_images.append(skin_data.get('data', {}).get('displayIcon', ''))
+			skin_videos.append(skin_data.get('data', {}).get('streamedVideo', ''))
 
-	bundles_images = []
-	current_bundles = []
-	for bundle in bundles_uuid:
-		with session.get(f'https://valorant-api.com/v1/bundles/{bundle}', headers=headers) as r:
-			data = r.json()
-		current_bundles.append(data['data']['displayName'])  # current bundle
-		bundles_images.append(data['data']['displayIcon'])  # bundle image
+		# Bundles
+		bundles_images, current_bundles = [], []
+		for bundle in bundles_uuid:
+			bundle_data = requests.get(f'https://valorant-api.com/v1/bundles/{bundle}').json()
+			current_bundles.append(bundle_data.get('data', {}).get('displayName', 'Unknown'))
+			bundles_images.append(bundle_data.get('data', {}).get('displayIcon', ''))
 
-	# Display
-	if not args['gui']:
-		console = Console()
-		table_one = Table(box=box.HORIZONTALS, show_header=True, header_style='bold #2070b2')
-		table_one.add_column('Skin', justify='left')
-		table_one.add_column('Price', justify='center')
-		table_one.add_column('Visual', justify='center')
-		n = 0
-		for i in range(4):
-			table_one.add_row(skin_names[n], str(singleweapons_prices[n]), skin_images[n])
-			n = n + 1
+		# Night Market data
+		nm_price = []
+		nm_offers = []
+		nm_images = []
+		nm_skins_id = []
+		use_nm = True
+		try:
+			for i in data['BonusStore']['BonusStoreOffers']:
+				[nm_price.append(k) for k in i['DiscountCosts'].values()]  # night market prices
+			for i in data['BonusStore']['BonusStoreOffers']:
+				[nm_skins_id.append(k['ItemID']) for k in i['Offer']['Rewards']]  # night market offers
+		except KeyError:
+			use_nm = False
+			for i in range(6):
+				nm_skins_id.append('NONE')
+			for i in range(6):
+				nm_price.append('NONE')
 
-		table_two = Table(box=box.HORIZONTALS, show_header=True, header_style='bold #2070b2')
-		table_two.add_column('Bundle', justify='left')
-		table_two.add_column('Price', justify='center')
-		table_two.add_column('Time Left', justify='center')
-		n = 0
-		for i in range(len(current_bundles)):
-			table_two.add_row(current_bundles[n], str(bundle_prices[n]), str(time))
-			n += 1
-		for i in range(4 - len(current_bundles)):
-			table_two.add_row()
+		for nmskinid in nm_skins_id:
+			with requests.get(f'https://valorant-api.com/v1/weapons/skinlevels/{nmskinid}') as r:
+				nmdata = r.json()
+			nm_offers.append(nmdata['data']['displayName'])  # names of daily items
+			nm_images.append(nmdata['data']['displayIcon'])  # images of daily items
 
-		table_three = Table(box=box.HORIZONTALS, show_header=True, header_style='bold #2070b2')
-		table_three.add_column('Offers', justify='left')
-		table_three.add_column('Price', justify='center')
-		table_three.add_column('Visual', justify='center')
-		n = 0
-		for i in range(6):
-			# table_three.add_row(nm_offers[n], str(nm_price[n]), nm_images[n])
-			n = n + 1
+		main_gui(vp, rp, current_bundles, bundles_images, bundle_prices, skin_names, skin_images, singleweapons_prices, skin_videos, nm_offers, nm_price, nm_images)
 
-		night_market_table = Table(box=box.HEAVY_EDGE, title='[bold]NIGHT MARKET[/bold]', show_header=True, header_style='bold #2070b2')
-		night_market_table.add_row(table_three)
+	except Exception as e:
+		print(f"Error: {e}")
 
-		table = Table(box=box.HEAVY_EDGE, show_header=True, title=f" ╔══ [bold]{get_userdata_from_id(val_uuid).capitalize()}'S DAILY STORE[/bold]\n ╠════ Valorant Points: [#2070b2]{vp} VP [/#2070b2] \n ╚══════ Radianite Points: [#2070b2] {rp} R [/#2070b2]")
-		table.add_column('DAILY ITEMS', justify='center')
-		table.add_column('BUNDLES', justify='center')
-		table.add_row(table_one, table_two)
-		console.print(table)
-	# console.print(night_market_table)
+
+def main_gui(vp, rp, current_bundles, bundles_images, bundle_prices, skin_names, skin_images, singleweapons_prices, skin_videos, nm_offers, nm_price, nm_images):
+	def open_url(url):
+		import webbrowser
+		webbrowser.open(url)
+
+	root = Tk()
+	root.title("Valorant Shop Checker")
+	root.geometry("1000x700")
+	root.configure(bg='#2e2e2e')  # Dark gray background
+
+	# Title Label
+	title = ttk.Label(root, text="Valorant Shop Checker", font=("Helvetica", 18), foreground="white", background="#2e2e2e")
+	title.pack(pady=10)
+
+	# Points Section
+	points_frame = ttk.Frame(root)
+	points_frame.pack(pady=5)
+
+	vp_label = ttk.Label(points_frame, text=f"Valorant Points (VP): {vp}", font=("Helvetica", 12), foreground="white", background='#2e2e2e')
+	vp_label.grid(row=0, column=0, padx=10)
+
+	rp_label = ttk.Label(points_frame, text=f"Radianite Points (RP): {rp}", font=("Helvetica", 12), foreground="white", background='#2e2e2e')
+	rp_label.grid(row=0, column=1, padx=10)
+
+	# Bundles Section
+	bundles_frame = ttk.LabelFrame(root, text="Bundles", labelanchor="n")
+	bundles_frame.pack(fill="x", pady=10)
+
+	for i, bundle in enumerate(current_bundles):
+		bundle_image = Image.open(requests.get(bundles_images[i], stream=True).raw)
+		bundle_image = bundle_image.resize((150, 150))  # Keep aspect ratio intact
+		img = ImageTk.PhotoImage(bundle_image)
+
+		img_label = ttk.Label(bundles_frame, image=img, background='#3c3c3c')
+		img_label.image = img
+		img_label.grid(row=0, column=i)
+
+		bundle_label = ttk.Label(bundles_frame, text=f"{bundle}\nPrice: {bundle_prices[i]} VP", anchor="center", font=("Helvetica", 10), foreground="white", background='#3c3c3c')
+		bundle_label.grid(row=1, column=i)
+
+	# Skins Section
+	skins_frame = ttk.LabelFrame(root, text="Daily Skins", labelanchor="n")
+	skins_frame.pack(fill="x", pady=10)
+
+	for i, skin in enumerate(skin_names):
+		skin_image = Image.open(requests.get(skin_images[i], stream=True).raw)
+		skin_image = skin_image.resize((120, 120))  # Keep aspect ratio intact
+		img = ImageTk.PhotoImage(skin_image)
+
+		img_label = ttk.Label(skins_frame, image=img, background='#3c3c3c')
+		img_label.image = img
+		img_label.grid(row=i // 4, column=i % 4, padx=10, pady=10)  # 4 items per row
+
+		skin_label = ttk.Label(skins_frame, text=f"{skin}\nPrice: {singleweapons_prices[i]} VP", font=("Helvetica", 10), foreground="white", background='#3c3c3c')
+		skin_label.grid(row=i // 4 + 1, column=i % 4, padx=10)
+
+	# Night Market Section
+	night_market_frame = ttk.LabelFrame(root, text="Night Market", labelanchor="n")
+	night_market_frame.pack(fill="x", pady=10)
+
+	if nm_offers:
+		for i, offer in enumerate(nm_offers):
+			nm_image = Image.open(requests.get(nm_images[i], stream=True).raw)
+			nm_image = nm_image.resize((120, 120))  # Keep aspect ratio intact
+			img = ImageTk.PhotoImage(nm_image)
+
+			img_label = ttk.Label(night_market_frame, image=img, background='#3c3c3c')
+			img_label.image = img
+			img_label.grid(row=i // 4, column=i % 4, padx=10, pady=10)
+
+			offer_label = ttk.Label(night_market_frame, text=f"{offer}\nPrice: {nm_price[i]} VP", font=("Helvetica", 10), foreground="white", background='#3c3c3c')
+			offer_label.grid(row=i // 4 + 1, column=i % 4, padx=10)
+
 	else:
-		def write_json(new_data, filename="/".join([parentdir, 'dailyshop.json'])):
-			with open(filename, 'r+') as file:
-				file.seek(0)
-				json.dump(new_data, file, indent=4)
+		empty_label = ttk.Label(night_market_frame, text="Night Market is currently unavailable.", font=("Helvetica", 10), foreground="white", background='#3c3c3c')
+		empty_label.pack()
 
-		shop = {
-			"Bundle": {
-				"bundle_name": current_bundles[0],
-				"bundle_image": bundles_images[0],
-				"bundle_price": str(bundle_prices[0])
-			},
-			"Skins": {
-				"skin1": {
-					"skin1_name": skin_names[0],
-					"skin1_image": skin_images[0],
-					"skin1_price": singleweapons_prices[0],
-					"skin1_video": skin_videos[0],
-				},
-				"skin2": {
-					"skin2_name": skin_names[1],
-					"skin2_image": skin_images[1],
-					"skin2_price": singleweapons_prices[1],
-					"skin2_video": skin_videos[1],
-				},
-				"skin3": {
-					"skin3_name": skin_names[2],
-					"skin3_image": skin_images[2],
-					"skin3_price": singleweapons_prices[2],
-					"skin3_video": skin_videos[2],
-				},
-				"skin4": {
-					"skin4_name": skin_names[3],
-					"skin4_image": skin_images[3],
-					"skin4_price": singleweapons_prices[3],
-					"skin4_video": skin_videos[3],
-				}
-			}
-		}
-
-		write_json(shop)
-		MainGui(vp, rp)
+	root.mainloop()
 
 
 def calculate_kd(kills, deaths):
@@ -725,20 +358,21 @@ def calculate_kd(kills, deaths):
 	return round(kills / deaths, 2)
 
 
-def get_userdata_from_id(user_id: str, host_player_uuid: str | None = None) -> str:
+def get_userdata_from_id(user_id: str, host_player_uuid: str | None = None) -> tuple[str, bool]:
 	with requests.put(f"https://pd.na.a.pvp.net/name-service/v2/players",
-	                  headers=internal_api_headers, json=[user_id]) as req:
+					  headers=internal_api_headers, json=[user_id]) as req:
 		user_info = req.json()[0]
 		user_name = f"{user_info['GameName']}#{user_info['TagLine']}"
 		if host_player_uuid is not None:
 			if user_id == host_player_uuid:
-				host_player = f"(You) {user_name}"
+				host_player = f"\033[33m(You) {user_name}\033[0m"
+				return host_player, True
 			else:
 				host_player = user_name
 		else:
 			host_player = user_name
 
-	return host_player
+	return host_player, False
 
 
 def get_agentdata_from_id(agent_id: str) -> str:
@@ -772,7 +406,7 @@ def generate_match_report(match_stats: dict, host_player_uuid: str, only_host_pl
 	damage_stats = {}
 
 	for player in all_players:
-		user_name = get_userdata_from_id(player['subject'])
+		user_name = get_userdata_from_id(player['subject'])[0]
 		agent_name = get_agentdata_from_id(player['characterId'])
 		stats = player['stats']
 
@@ -810,7 +444,7 @@ def generate_match_report(match_stats: dict, host_player_uuid: str, only_host_pl
 			try:
 				report.append(f"  Ability Casts: Grenades: {stats['abilityCasts']['grenadeCasts']}, Ability1: {stats['abilityCasts']['ability1Casts']}, Ability2: {stats['abilityCasts']['ability2Casts']}, Ultimates: {stats['abilityCasts']['ultimateCasts']}")
 				for rd in player['roundDamage']:
-					user = get_userdata_from_id(str(rd['receiver']))
+					user = get_userdata_from_id(str(rd['receiver']))[0]
 					report.append(f"  Round {rd['round']} - Damage to {user}: {rd['damage']}")
 			except:
 				report.append("Failed to get!")
@@ -837,14 +471,14 @@ def generate_match_report(match_stats: dict, host_player_uuid: str, only_host_pl
 def get_rank_from_uuid(user_id: str, platform: str = "PC"):
 	if platform == "PC":
 		with requests.get(f"https://pd.na.a.pvp.net/mmr/v1/players/{user_id}/competitiveupdates?queue=competitive",
-		                  headers=internal_api_headers) as r:
+						  headers=internal_api_headers) as r:
 			try:
 				rank_tier = r.json()["Matches"][0]["TierAfterUpdate"]
 			except:
 				return "Unranked"
 	elif platform == "CONSOLE":
 		with requests.get(f"https://pd.na.a.pvp.net/mmr/v1/players/{user_id}/competitiveupdates?queue=console_competitive",
-		                  headers=internal_api_headers_console) as r:
+						  headers=internal_api_headers_console) as r:
 			try:
 				rank_tier = r.json()["Matches"][0]["TierAfterUpdate"]
 			except:
@@ -903,11 +537,12 @@ def create_session():
 	return session
 
 
-def get_playerdata_from_uuid(user_id: str, platform: str = "PC"):
+def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC"):
 	kills = 0
 	deaths = 0
 	wins = []
 	session = create_session()
+	partyIDs = {}
 
 	try:
 		if platform == "PC":
@@ -918,41 +553,55 @@ def get_playerdata_from_uuid(user_id: str, platform: str = "PC"):
 			headers = internal_api_headers_console
 
 		response = session.get(url, headers=headers)
-		response.raise_for_status()  # Raise an exception for HTTP errors
-
 		history = response.json().get("History", [])
-		time.sleep(5)  # Delay to prevent rate limiting
+		time.sleep(2.5)  # Delay to prevent rate limiting
+
 		for i in history:
 			match_id = i["MatchID"]
 			match_url = f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}"
 			match_response = session.get(match_url, headers=headers)
-			match_response.raise_for_status()
 
 			match_data = match_response.json()
 			player_data = match_data.get("players", [])
 
 			for match in player_data:
 				if str(match["subject"]) == str(user_id):
-					team = match["teamId"]
-					# Get win or loss
-					game_team_id = match_data["teams"][0]["teamId"]
-					if str(game_team_id).lower() == str(team).lower():
-						won = match_data["teams"][0]["won"]
-					else:
-						won = match_data["teams"][1]["won"]
+					partyId = match["partyId"]
 
-					if won:
-						wins.append("True")
+					# Add player to their party
+					if partyId not in partyIDs:
+						partyIDs[partyId] = [match["subject"]]
 					else:
-						wins.append("False")
+						partyIDs[partyId].append(match["subject"])
+
+					# Collect kill/death and win data
+					team = match["teamId"]
+					game_team_id = match_data["teams"][0]["teamId"]
+					won = match_data["teams"][0]["won"] if game_team_id == team else match_data["teams"][1]["won"]
+					wins.append(Fore.GREEN + "■" if won else Fore.RED + "■")
 					kills += match["stats"]["kills"]
 					deaths += match["stats"]["deaths"]
 
+		# Filter out solo players (party with only one member)
+		filtered_parties = {k: v for k, v in partyIDs.items() if len(v) > 1}
+
+		# Check if any party members are in the same current game
+		current_parties = {}
+		for party_id, members in filtered_parties.items():
+			for member in members:
+				if any(player["subject"] == member for player in player_data):
+					current_parties[party_id] = members
+					break
+
 		kd_ratio = calculate_kd(kills, deaths)
 		cache[user_id] = (kd_ratio, wins)
+
+		return current_parties, cache
+
 	except Exception as e:
 		print(f"Error: {e}")
 		cache[user_id] = (0, ['Error'])
+		return {}, cache
 
 
 def get_members_of_party_from_uuid(player_id: str):
@@ -964,11 +613,9 @@ def get_members_of_party_from_uuid(player_id: str):
 				if is_console:
 					with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(player_id)}", headers=internal_api_headers_console) as r2:
 						party_id = r2.json()['CurrentPartyID']
-						input()
 
 			else:
 				party_id = r.json()['CurrentPartyID']
-				input()
 
 		except Exception as e:
 			raise e
@@ -978,7 +625,7 @@ def get_members_of_party_from_uuid(player_id: str):
 		with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/parties/{party_id}", headers=internal_api_headers) as r:
 			party_data = r.json()
 		for member in party_data["Members"]:
-			player_name = get_userdata_from_id(str(member["Subject"]))
+			player_name = get_userdata_from_id(str(member["Subject"]))[0]
 			player_list.append(player_name)
 	else:
 		player_list.clear()
@@ -986,172 +633,227 @@ def get_members_of_party_from_uuid(player_id: str):
 	return player_list, party_id
 
 
-def run_in_game(cache=None, our_team_colour: str = None):
+def get_rank_color(rank: str):
+	"""Return colored text for a rank, with Radiant being multicolored."""
+
+	# Define color codes
+	RANK_COLORS = {
+		"Iron": "\033[90m",  # Gray
+		"Bronze": "\033[38;5;130m",  # Orange/Brown
+		"Silver": "\033[37m",  # Light Gray/White
+		"Gold": "\033[33m",  # Yellow
+		"Plat": "\033[36m",  # Cyan
+		"Diamond": "\033[35m",  # Magenta (Updated Diamond)
+		"Ascendant": "\033[38;5;82m",  # Bright Green
+		"Immortal": "\033[31m",  # Red (Updated Immortal)
+		"Radiant": "\033[38;5;196m\033[38;5;202m\033[38;5;226m\033[38;5;82m\033[38;5;33m\033[38;5;201m"  # Rainbow (Multi-Colored)
+	}
+
+	RESET = "\033[0m"  # Reset color to default
+
+	# If the rank is Radiant, apply the multicolored effect
+	if "Radiant" in rank.capitalize():
+		return f"{RANK_COLORS['Radiant']}[{rank}]{RESET}"
+
+	# For other ranks, return the appropriate color
+	for rank_name, color in RANK_COLORS.items():
+		if rank_name.capitalize() in rank.capitalize():
+			return f"{color}[{rank}]{RESET}"
+
+	# Default return for unknown ranks
+	return f"\033[90m[{rank}]{RESET}"  # No color, default text
+
+
+def get_current_game_score(puuid: str) -> tuple[int, int]:
+	requests.packages.urllib3.disable_warnings()
+	with requests.get(f"https://127.0.0.1:{port}/chat/v4/presences",
+					  headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
+		data = r.json()
+
+	all_user_data = data["presences"]
+	for user in all_user_data:
+		if user["puuid"] == puuid:
+			encoded_user_data: str = user["private"]
+	decoded_user_data = json.loads(b64decode(encoded_user_data))
+	allyTeamScore = decoded_user_data["partyOwnerMatchScoreAllyTeam"]
+	enemyTeamScore = decoded_user_data["partyOwnerMatchScoreEnemyTeam"]
+	return allyTeamScore, enemyTeamScore
+
+
+async def run_in_game(cache=None, our_team_colour: str = None):
 	if cache is None:
 		cache = {}
-	os.system("cls")
+
+	buffer = StringIO()
+	last_rendered_content = ""
+
 	print("Loading...")
+
+	# Fetch match ID
 	while True:
 		try:
 			with requests.get(f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}", headers=internal_api_headers) as r:
-				match_id = r.json()["MatchID"]
-				break
+				if r.status_code != 404:
+					match_id = r.json()["MatchID"]
+					break
+				else:
+					pass
 		except:
 			pass
+
 	got_players = False
-	freeze_prints = False
-	message_list = []
 	player_data = {}
 	player_name_cache = []
 	team_blue_player_list = {}
 	team_red_player_list = {}
 
 	def fetch_player_data(player_id, platform):
-		get_playerdata_from_uuid(player_id, platform)
+		nonlocal cache
+		_, cache = get_playerdata_from_uuid(player_id, cache, platform)
 
 	while True:
-		with requests.get(f"https://glz-na-1.na.a.pvp.net/core-game/v1/matches/{match_id}",
-		                  headers=internal_api_headers) as r:
-			match_data = r.json()
-			try:
-				match_data["State"]
-			except Exception as e:
-				print(f"Error: {e}")
-			with open("match_data.json", "w") as f:
-				json.dump(match_data, f, indent=4)
+		buffer.truncate(0)
+		buffer.seek(0)
+		try:
+			with requests.get(f"https://glz-na-1.na.a.pvp.net/core-game/v1/matches/{match_id}",
+							  headers=internal_api_headers) as r:
+				if r.status_code == 400:
+					await log_in()
+				match_data = r.json()
 
-		if r.status_code != 404:
-			if match_data["State"] != "CLOSED":
-				# Get map ID
-				map_id = match_data["MapID"]
-				gamemode_name = match_data["MatchmakingData"]["QueueID"]
-				# Map id to Map Name
-				map_name = get_mapdata_from_id(map_id)
-				if not freeze_prints:
-					os.system("cls")
-					print(f"Map: {map_name}")
-					print(f"Game mode: {str(gamemode_name).capitalize()}")
-				if not got_players:
-					threads = []
-					for player in match_data["Players"]:
-						player_id = player["PlayerIdentity"]["Subject"]
-						team_id = player["TeamID"]
-						player_lvl = player["PlayerIdentity"]["AccountLevel"]
+				if r.status_code != 404 and match_data["State"] != "CLOSED":
+					map_id = match_data["MapID"]
+					gamemode_name = match_data["MatchmakingData"]["QueueID"]
+					map_name = get_mapdata_from_id(map_id)
 
-						agent_name = get_agentdata_from_id(player['CharacterID'])
+					buffer.write(Fore.GREEN + f"Map: {map_name}\n" + Style.RESET_ALL)
+					buffer.write(Fore.CYAN + f"Game mode: {str(gamemode_name).capitalize()}\n\n" + Style.RESET_ALL)
 
-						host_player = get_userdata_from_id(player_id, val_uuid)
-						player_name_cache.append(host_player)
+					if not got_players:
+						threads = []
+						for player in match_data["Players"]:
+							player_id = player["PlayerIdentity"]["Subject"]
+							team_id = player["TeamID"]
+							player_lvl = player["PlayerIdentity"]["AccountLevel"]
+							agent_name = get_agentdata_from_id(player['CharacterID'])
 
-						if "console" in gamemode_name:
-							rank = get_rank_from_uuid(str(player_id), "CONSOLE")
-							if our_team_colour is not None:
-								if str(our_team_colour) != str(team_id):
-									thread = threading.Thread(target=fetch_player_data, args=(player_id, "CONSOLE"))
-									threads.append(thread)
-									thread.start()
-							else:
+							host_player = get_userdata_from_id(player_id, val_uuid)[0]
+							player_name_cache.append(host_player)
+
+							if "console" in gamemode_name:
+								rank = get_rank_from_uuid(str(player_id), "CONSOLE")
 								thread = threading.Thread(target=fetch_player_data, args=(player_id, "CONSOLE"))
 								threads.append(thread)
 								thread.start()
-						else:
-							rank = get_rank_from_uuid(str(player_id))
-							if our_team_colour is not None:
-								if str(our_team_colour) != str(team_id):
-									thread = threading.Thread(target=fetch_player_data, args=(player_id, "PC"))
-									threads.append(thread)
-									thread.start()
 							else:
+								rank = get_rank_from_uuid(str(player_id))
 								thread = threading.Thread(target=fetch_player_data, args=(player_id, "PC"))
 								threads.append(thread)
 								thread.start()
 
-						if team_id.lower() == "blue":
-							team_blue_player_list[host_player] = (agent_name, player_lvl, rank)
-						elif team_id.lower() == "red":
-							team_red_player_list[host_player] = (agent_name, player_lvl, rank)
-						player_data[host_player] = cache.get(str(player_id), ("Loading", "Loading"))
-				count = 0
-				for player in match_data["Players"]:
-					player_id = player["PlayerIdentity"]["Subject"]
-					player_data[str(player_name_cache[count])] = cache.get(str(player_id), ("Loading", "Loading"))
-					count += 1
-				if not freeze_prints:
-					message_list.append("Team Blue:")
+							if team_id.lower() == "blue":
+								team_blue_player_list[host_player] = (agent_name, player_lvl, rank)
+							elif team_id.lower() == "red":
+								team_red_player_list[host_player] = (agent_name, player_lvl, rank)
+
+							player_data[host_player] = cache.get(str(player_id), ("Loading", "Loading"))
+
+					count = 0
+					for player in match_data["Players"]:
+						player_id = player["PlayerIdentity"]["Subject"]
+						player_data[str(player_name_cache[count])] = cache.get(str(player_id), ("Loading", "Loading"))
+						count += 1
+
+					buffer.write(Fore.BLUE + "Team Blue:\n" + Style.RESET_ALL)
 					for user_name, data in team_blue_player_list.items():
-						message_list.append(f"[LVL {data[1]}] [Rank {data[2]}] {user_name} ({data[0]})")
-						try:
-							kd, wins = player_data[str(user_name)]
-						except:
-							kd = "Loading"
-							wins = "Loading"
-						message_list.append(f"Player KD: {kd} | Past Matches: {wins}\n")
+						buffer.write(Fore.BLUE + f"[LVL {data[1]}] {get_rank_color(data[2])} {user_name} ({data[0]})\n" + Style.RESET_ALL)
+						kd, wins = player_data.get(user_name, ("Loading", "Loading"))
+						buffer.write(Fore.MAGENTA + f"Player KD: {kd} | Past Matches: {''.join(wins)}\n\n" + Style.RESET_ALL)
 
-					message_list.append("\nVS\n\nTeam Red:")
+					buffer.write(Fore.RED + "VS\n\nTeam Red:\n" + Style.RESET_ALL)
 					for user_name, data in team_red_player_list.items():
-						message_list.append(f"[LVL {data[1]}] [Rank {data[2]}] {user_name}  ({data[0]})")
-						kd, wins = player_data[str(user_name)]
-						message_list.append(f"Player KD: {kd} | Past Matches: {wins}\n")
-				got_players = True
+						buffer.write(Fore.RED + f"[LVL {data[1]}] {get_rank_color(data[2])} {user_name} ({data[0]})\n" + Style.RESET_ALL)
+						kd, wins = player_data.get(user_name, ("Loading", "Loading"))
+						buffer.write(Fore.MAGENTA + f"Player KD: {kd} | Past Matches: {''.join(wins)}\n\n" + Style.RESET_ALL)
 
-				for i in message_list:
-					print(i)
-				message_list.clear()
-				# Try and Get match stats
-				try:
-					with requests.get(f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}",
-					                  headers=internal_api_headers) as re_match_stats:
-						match_stats = re_match_stats.json()
-						with open("match_stats.json", "w") as f:
-							json.dump(match_stats, f, indent=4)
-					total_rounds = match_stats["teams"][0]["roundsPlayed"]
-					team_1_rounds = match_stats["teams"][0]["roundsWon"]
-					team_2_rounds = match_stats["teams"][1]["roundsWon"]
-					os.system("cls")
-					for i in message_list:
-						print(i)
-					print(f"Total Rounds: {total_rounds}")
-					print(f"Score: {team_1_rounds}  |  {team_2_rounds}")
-				except:
-					pass
-				time.sleep(5)
-			else:
-				os.system("cls")
-				print("Match Ended!")
-				print("Loading Match Report (BETA)")
-				report = generate_match_report(match_stats, val_uuid, False)
-				for i in report:
-					print(i)
-				input("\nPress any key to continue")
-				break
-		else:
-			os.system("cls")
-			print("Match Ended!")
-			print("Loading Match Report (BETA)")
-			report = generate_match_report(match_stats, val_uuid, False)
-			for i in report:
-				print(i)
-			input("\nPress any key to continue")
-			break
+					score = get_current_game_score(val_uuid)
+					buffer.write(f"{score[0]} | {score[1]}\n")
+
+					got_players = True
+
+					try:
+						with requests.get(f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}",
+										  headers=internal_api_headers) as re_match_stats:
+							match_stats = re_match_stats.json()
+
+						total_rounds = match_stats["teams"][0]["roundsPlayed"]
+						team_1_rounds = match_stats["teams"][0]["roundsWon"]
+						team_2_rounds = match_stats["teams"][1]["roundsWon"]
+
+						buffer.write(Fore.YELLOW + f"Total Rounds: {total_rounds}\n" + Style.RESET_ALL)
+						buffer.write(Fore.YELLOW + f"Score: {team_1_rounds}  |  {team_2_rounds}\n" + Style.RESET_ALL)
+						await asyncio.sleep(3)
+						return
+
+					except:
+						pass
+
+					# Render buffer content if it has changed
+					current_rendered_content = buffer.getvalue()
+					if current_rendered_content != last_rendered_content:
+						clear_console()
+						print(current_rendered_content)
+						last_rendered_content = current_rendered_content
+
+					time.sleep(5)
+
+				else:
+					"""
+					clear_console()
+					print("Match Ended!")
+					print("Loading Match Report (BETA)")
+					report = generate_match_report(match_stats, val_uuid, False)
+					for line in report:
+						print(line)
+					input("\nPress any key to continue")
+					"""
+					return
+
+		except Exception as e:
+			print("this")
+			print(e)
 
 
-def run_pregame(data: dict):
-	global cache, our_team_colour
+def print_buffered(buffer):
+	"""Print content from a buffer without clearing the screen."""
+	sys.stdout.write(buffer.getvalue())
+	sys.stdout.flush()
+
+
+async def run_pregame(data: dict):
 	print("Match FOUND! Getting match details")
 	got_rank = False
 	got_map_and_gamemode = False
 	player_data = {}
 	threads = []
 	rank_list = {}
+	buffer = StringIO()
+	last_rendered_content = ""
+
+	cache = {}
+	partys: {str, list[str]} = {}
 
 	def fetch_player_data(player_id, platform):
-		get_playerdata_from_uuid(player_id, platform)
+		nonlocal partys, cache
+		partys, cache = get_playerdata_from_uuid(player_id, cache, platform)
+		return
 
 	while True:
-		os.system('cls')
+		buffer.truncate(0)
+		buffer.seek(0)
 		try:
 			with requests.get(f"https://glz-na-1.na.a.pvp.net/pregame/v1/matches/{data['MatchID']}",
-			                  headers=internal_api_headers) as r:
+							  headers=internal_api_headers) as r:
 				match_data = r.json()
 				with open("pre_match_data.json", "w") as f:
 					json.dump(match_data, f, indent=4)
@@ -1160,24 +862,22 @@ def run_pregame(data: dict):
 				map_name = get_mapdata_from_id(match_data["MapID"])
 				gamemode_name = match_data["QueueID"]
 				got_map_and_gamemode = True
-			print(f"Map: {map_name}")
-			print(f"Game mode: {str(gamemode_name).capitalize()}\n")
+
+			# Ensure color resets after each section
+			buffer.write(color_text(f"Map: {map_name}\n", Fore.GREEN))
+			buffer.write(color_text(f"Game mode: {str(gamemode_name).capitalize()}\n\n", Fore.CYAN))
+
 			our_team_colour = match_data["AllyTeam"]["TeamID"]
 
+			party_number = 1
+			party_exists = []
+
 			for ally_player in match_data["AllyTeam"]["Players"]:
-				user_name = get_userdata_from_id(ally_player["PlayerIdentity"]["Subject"], val_uuid)
+				user_name, is_user = get_userdata_from_id(ally_player["PlayerIdentity"]["Subject"], val_uuid)
 				player_level = ally_player["PlayerIdentity"]["AccountLevel"]
-				# party_members, party_id = get_members_of_party_from_uuid(str(ally_player["PlayerIdentity"]["Subject"]))
-				'''
-                if party_id:
-                    if party_id not in party_tracker:
-                        party_tracker[party_id] = party_number
-                        party_number += 1
-                    party_num = party_tracker[party_id]
-                else:
-                    party_num = None
-                '''
-				party_num = False
+
+				party_symbol = ""
+
 				try:
 					agent_name = get_agentdata_from_id(ally_player["CharacterID"])
 				except Exception:
@@ -1194,123 +894,219 @@ def run_pregame(data: dict):
 						thread = threading.Thread(target=fetch_player_data, args=(ally_player["PlayerIdentity"]["Subject"], "PC"))
 					threads.append(thread)
 					thread.start()
+
 				player_data[user_name] = cache.get(str(ally_player["PlayerIdentity"]["Subject"]), ("Loading", "Loading"))
-				if ally_player["CharacterSelectionState"] == "":
-					rank = rank_list.get(str(user_name), "Failed")
-					if party_num:
-						print(f"({party_num}) [LVL {player_level}] [Rank {rank}] {user_name}: {agent_name} (Picking)")
-					else:
-						print(f"([LVL {player_level}] [Rank {rank}] {user_name}: {agent_name} (Picking)")
-				elif ally_player["CharacterSelectionState"] == "selected":
-					rank = rank_list.get(str(user_name), "Failed")
-					if party_num:
-						print(f"({party_num}) [LVL {player_level}] [Rank {rank}] {user_name}: {agent_name} (Hovering)")
-					else:
-						print(f"[LVL {player_level}] [Rank {rank}] {user_name}: {agent_name} (Hovering)")
+				state = ally_player["CharacterSelectionState"]
+
+				rank = rank_list.get(str(user_name), "Failed")
+
+				# Ensure the rank color is applied correctly
+				for party_id, members in partys.items():
+					if ally_player["PlayerIdentity"]["Subject"] in members:
+						for existing_party in party_exists:
+							if existing_party[0] == party_id:
+								party_symbol = f"({existing_party[1]}) "
+								break
+						else:
+							# Assign new party number
+							party_exists.append([party_id, party_number])
+							party_symbol = f"({party_number}) "
+							party_number += 1
+						break
+
+				if state == "":
+					buffer.write(color_text(f"{party_symbol}[LVL {player_level}] {get_rank_color(rank)} {user_name}: {agent_name} (Picking)\n", Fore.YELLOW))
+				elif state == "selected":
+					buffer.write(color_text(f"{party_symbol}[LVL {player_level}] {get_rank_color(rank)} {user_name}: {agent_name} (Hovering)\n", Fore.BLUE))
 				else:
-					rank = rank_list.get(str(user_name), "Failed")
-					if party_num:
-						print(f"({party_num}) [LVL {player_level}] [Rank {rank}] {user_name}: {agent_name} (Locked)")
-					else:
-						print(f"[LVL {player_level}] [Rank {rank}] {user_name}: {agent_name} (Locked)")
+					buffer.write(color_text(f"{party_symbol}[LVL {player_level}] {get_rank_color(rank)} {user_name}: {agent_name} (Locked)\n", Fore.GREEN))
 
 				kd, wins = cache.get(str(ally_player["PlayerIdentity"]["Subject"]), ("Loading", "Loading"))
-				print(f"Player KD: {kd} | Past Matches: {wins}\n")
+				buffer.write(color_text(f"Player KD: {kd} | Past Matches: {''.join(wins)}\n\n", Fore.MAGENTA))
 
 			got_rank = True
-			print(f"Enemy team: {match_data['EnemyTeamLockCount']}/5 LOCKED")
+			buffer.write(color_text(f"Enemy team: {match_data['EnemyTeamLockCount']}/5 LOCKED\n", Fore.RED))
 			if match_data["PhaseTimeRemainingNS"] == 0:
-				print("In Loading Phase")
+				buffer.write(color_text("In Loading Phase\n", Fore.CYAN))
 				break
-			time.sleep(2)
+
+			# Render the current buffer content
+			current_rendered_content = buffer.getvalue()
+
+			# Only update the screen if content has changed
+			if current_rendered_content != last_rendered_content:
+				clear_console()
+				print(current_rendered_content)
+				last_rendered_content = current_rendered_content
+
+			time.sleep(0.5)
 
 		except Exception as e:
 			raise e
+			print("this 1")
+			print(e)
 
-	run_in_game(cache, our_team_colour)
+	await run_in_game(cache, our_team_colour)
 
 
-def get_party():
-	cancel = False
-	os.system("cls")
-	party_id = None
+def clear_console():
+	os.system("cls" if os.name == "nt" else "clear")
+
+
+def color_text(text, color):
+	"""Apply color to the text."""
+	return f"{color}{text}{Style.RESET_ALL}"
+
+
+async def toggle_ready_state(party_id: str, is_ready: bool):
+	url = f"https://glz-na-1.na.a.pvp.net/parties/v1/parties/{party_id}/members/{val_uuid}/setReady"
+	headers = internal_api_headers  # Adjust for console if necessary
+	data = {"ready": is_ready}
+
+	try:
+		response = requests.post(url, json=data, headers=headers)
+		if response.status_code == 200:
+			print(f"Ready state set to: {is_ready}")
+			return True
+		else:
+			print(f"Failed to toggle ready state: {response.status_code} - {response.text}")
+			return False
+	except Exception as e:
+		print(f"Error while toggling ready state: {e}")
+		return False
+
+
+async def listen_for_input(party_id: str):
+	is_ready = True  # Start with the default ready state
+	print("Press 'r' to toggle ready state or 'q' to quit.")
+
 	while True:
-		check_if_user_in_pregame()
-		message_list = ["-----Party-----\n"]
-		with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(val_uuid)}", headers=internal_api_headers) as r:
-			try:
+		try:
+			user_input = await asyncio.to_thread(input, "> ")  # Non-blocking input
+			user_input = user_input.strip().lower()
+
+			if user_input == "r":
+				is_ready = not is_ready
+				await toggle_ready_state(party_id, is_ready)
+			elif user_input == "q":
+				print("Exiting input listener...")
+				break
+		except Exception as e:
+			print(f"Error in input listener: {e}")
+			break
+
+
+async def get_party():
+	cancel = False
+	party_id = None
+	buffer = StringIO()
+	last_rendered_content = ""
+	input_task = None  # Task for input handling
+
+	while True:
+		try:
+			await check_if_user_in_pregame()
+			buffer.truncate(0)
+			buffer.seek(0)
+
+			message_list = [color_text("----- Party -----\n", Fore.CYAN)]
+			with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(val_uuid)}", headers=internal_api_headers) as r:
 				if r.status_code == 400:
 					is_console = str(r.json()["errorCode"]) == "PLAYER_PLATFORM_TYPE_MISMATCH"
 					if is_console:
 						with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(val_uuid)}", headers=internal_api_headers_console) as r2:
 							party_id = r2.json()['CurrentPartyID']
 					else:
-						print(r.json())
+						buffer.write(color_text("Error fetching party details.\n", Fore.RED))
 						party_id = r.json()['CurrentPartyID']
+				elif r.status_code == 404:
+					party_id = None
 				else:
 					party_id = r.json()['CurrentPartyID']
-			except Exception as e:
-				raise e
 
-		if party_id is not None:
-			with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/parties/{party_id}", headers=internal_api_headers) as r:
-				party_data = r.json()
-			is_queueing = party_data["State"]
-			if is_queueing == "MATCHMAKING":
-				print("Queueing!")
-				check_if_user_in_pregame()
-				cancel = True
-			is_console: bool = str(party_data["Members"][0]["PlatformType"]).lower() == "console"
-			game_mode: str = str(party_data["MatchmakingData"]["QueueID"]).capitalize()
-			message_list.append(f"Mode: {game_mode}\n\n")
-			for member in party_data["Members"]:
-				player_name = get_userdata_from_id(str(member["Subject"]), val_uuid)
-				is_leader: bool = bool(member["IsOwner"])
-				player_lvl: str = str(member["PlayerIdentity"]["AccountLevel"])
-				if is_leader:
-					message_list.append(f"[Leader] [LVL {player_lvl}] {player_name}\n")
-				else:
-					message_list.append(f"[{player_lvl}] {player_name}\n")
-			os.system("cls")
-			for i in message_list:
-				print(i)
-			time.sleep(0.5)
-			if cancel:
-				check_if_user_in_pregame()
-				break
-		else:
-			print("Valorant is not running for that user!")
-			time.sleep(3.5)
-			os.system("cls")
+			if party_id is not None:
+				if input_task is None or input_task.done():
+					input_task = asyncio.create_task(listen_for_input(party_id))
+
+				with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/parties/{party_id}", headers=internal_api_headers) as r:
+					party_data = r.json()
+
+				is_queueing = party_data["State"]
+				if is_queueing == "MATCHMAKING":
+					message_list.append(color_text("Queueing!\n", Fore.YELLOW))
+					await check_if_user_in_pregame()
+					last_rendered_content = ""
+					cancel = True
+
+				is_console = str(party_data["Members"][0]["PlatformType"]).lower() == "console"
+				game_mode = str(party_data["MatchmakingData"]["QueueID"]).capitalize()
+				message_list.append(color_text(f"Mode: {game_mode}\n\n", Fore.GREEN))
+
+				for member in party_data["Members"]:
+					player_name, is_user = get_userdata_from_id(str(member["Subject"]), val_uuid)
+					is_leader = bool(member.get("IsOwner", False))
+					player_lvl = str(member["PlayerIdentity"]["AccountLevel"])
+
+					color = Fore.YELLOW if is_user else (Fore.MAGENTA if is_leader else Fore.WHITE)
+					leader_text = "[Leader] " if is_leader else ""
+					message_list.append(color_text(f"{leader_text}[LVL {player_lvl}] {player_name}\n", color))
+
+				current_rendered_content = ''.join(message_list)
+
+				if current_rendered_content != last_rendered_content:
+					buffer.write(current_rendered_content)
+					last_rendered_content = current_rendered_content
+					clear_console()
+					print_buffered(buffer)
+
+				await asyncio.sleep(0.5)
+
+				if cancel:
+					await check_if_user_in_pregame()
+					last_rendered_content = ""
+					break
+			else:
+				new_message = color_text("Valorant is not running for that user!\n", Fore.RED)
+				if new_message != last_rendered_content:
+					buffer.write(new_message)
+					last_rendered_content = new_message
+					print_buffered(buffer)
+				await asyncio.sleep(3.5)
+		except Exception as e:
+			pass
+			# print("Re-logging In!")
+			# await log_in()
 
 
-def check_if_user_in_pregame(send_message: bool = False):
+async def check_if_user_in_pregame(send_message: bool = False):
 	if send_message:
 		print("\n\nChecking if player is in match")
 
 	# Try pregame
 	with requests.get(f"https://glz-na-1.na.a.pvp.net/pregame/v1/players/{val_uuid}",
-	                  headers=internal_api_headers) as r:
+					  headers=internal_api_headers) as r:
 		data = r.json()
 	try:
 		if data["errorCode"] == "RESOURCE_NOT_FOUND":
 			pass
 	except KeyError:
 		if data["MatchID"]:
-			os.system("cls")
-			run_pregame(data)
+			clear_console()
+			await run_pregame(data)
 
 	# Try playing in-game
 	with requests.get(f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}",
-	                  headers=internal_api_headers) as r:
+					  headers=internal_api_headers) as r:
 		data = r.json()
 	try:
 		if data["errorCode"] == "RESOURCE_NOT_FOUND":
 			pass
 	except KeyError:
 		if data["MatchID"]:
-			os.system("cls")
-			run_in_game()
+			clear_console()
+			await run_in_game()
+
+	return
 
 
 def get_userdata_from_token() -> tuple[str, str]:
@@ -1324,32 +1120,39 @@ def get_userdata_from_token() -> tuple[str, str]:
 
 
 async def main():
-	os.system("cls")
+	clear_console()
 	print(colorama.Fore.BLUE + "Welcome" + colorama.Style.RESET_ALL)
 	print("One moment while we sign you in...\n")
+
 	logged_in = await log_in()
 	if logged_in:
 		name, tag = get_userdata_from_token()
-		get_headers()
+		logger.log(str(OUTPUT_PATH.name), 4, f"Logged in with {name}#{tag}")
 		while True:
 			try:
 				print(f"\nYou have been logged in! Welcome, {name.capitalize()}")
 
 				user_input = input("(1) Check shop, (2) In-game loader\n")
+				clear_console()
 				if user_input == "1":
 					# Get valorant shop
 					val_shop_checker()
 				elif user_input == "2":
 					while True:
 						# Check if user is selecting an agent / pregame
-						check_if_user_in_pregame(False)
+						await check_if_user_in_pregame()
 
 						# BETA party system
-						get_party()
+						await get_party()
 			except Exception as e:
-				print(f"An Error Has Happened!\nError: {e} | {e.__traceback__}")
+				traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+				print(f"An Error Has Happened!\n{traceback_str}")
+				logger.log(str(OUTPUT_PATH.name), 1, f"{traceback_str}")
+	else:
+		time.sleep(5)
 
 
 if __name__ == "__main__":
+	clear_console()
+	colorama.init(autoreset=True)
 	asyncio.run(main())
-
