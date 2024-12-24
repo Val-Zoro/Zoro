@@ -1,4 +1,4 @@
-VERSION = "v2.0.2"
+VERSION = "v2.0.3"
 
 import asyncio
 import threading
@@ -12,6 +12,9 @@ import colorama
 import json
 import requests
 import ssl
+
+# LOCAL IMPORT
+import log
 
 from base64 import b64encode, b64decode
 from io import StringIO
@@ -177,20 +180,18 @@ def get_headers():
 	internal_api_headers_console = headers_console.copy()
 
 
-def val_shop_checker():
+async def val_shop_checker():
+	await log_in()
 	try:
 		get_headers()
 
 		# Fetch data from API
 		response = requests.post(f"https://pd.na.a.pvp.net/store/v3/storefront/{val_uuid}",
-								 headers=internal_api_headers, json={})
+		                         headers=internal_api_headers, json={})
 		data = response.json()
 
 		with open("data.json", "w") as f:
 			json.dump(data, f, indent=4)
-
-		weapon_fetch = requests.get(f'https://valorant-api.com/v1/weapons/skinlevels')
-		weapon_data = weapon_fetch.json()
 
 		GetPoints = requests.get(f"https://pd.na.a.pvp.net/store/v1/wallet/{val_uuid}", headers=internal_api_headers)
 		GetPoints_data = GetPoints.json()
@@ -202,10 +203,10 @@ def val_shop_checker():
 		bundles_uuid = []
 		bundle_prices = []
 		featured_bundles = data.get('FeaturedBundle', {})
-		time = convert_time(featured_bundles.get('BundleRemainingDurationInSeconds', 0))
+		# time = convert_time(featured_bundles.get('BundleRemainingDurationInSeconds', 0))
 
 		if 'Bundles' in featured_bundles:
-			bundles = featured_bundles['Bundles'][:2]  # Limit to 2 bundles
+			bundles = featured_bundles['Bundles']
 			for element in bundles:
 				bundle_uuid = element.get('DataAssetID', '')
 				bundles_uuid.append(bundle_uuid)
@@ -240,14 +241,12 @@ def val_shop_checker():
 		nm_offers = []
 		nm_images = []
 		nm_skins_id = []
-		use_nm = True
 		try:
 			for i in data['BonusStore']['BonusStoreOffers']:
 				[nm_price.append(k) for k in i['DiscountCosts'].values()]  # night market prices
 			for i in data['BonusStore']['BonusStoreOffers']:
 				[nm_skins_id.append(k['ItemID']) for k in i['Offer']['Rewards']]  # night market offers
 		except KeyError:
-			use_nm = False
 			for i in range(6):
 				nm_skins_id.append('NONE')
 			for i in range(6):
@@ -414,7 +413,7 @@ def calculate_kd(kills, deaths):
 
 def get_userdata_from_id(user_id: str, host_player_uuid: str | None = None) -> tuple[str, bool]:
 	with requests.put(f"https://pd.na.a.pvp.net/name-service/v2/players",
-					  headers=internal_api_headers, json=[user_id]) as req:
+	                  headers=internal_api_headers, json=[user_id]) as req:
 		user_info = req.json()[0]
 		user_name = f"{user_info['GameName']}#{user_info['TagLine']}"
 		if host_player_uuid is not None:
@@ -525,14 +524,14 @@ def generate_match_report(match_stats: dict, host_player_uuid: str, only_host_pl
 def get_rank_from_uuid(user_id: str, platform: str = "PC"):
 	if platform == "PC":
 		with requests.get(f"https://pd.na.a.pvp.net/mmr/v1/players/{user_id}/competitiveupdates?queue=competitive",
-						  headers=internal_api_headers) as r:
+		                  headers=internal_api_headers) as r:
 			try:
 				rank_tier = r.json()["Matches"][0]["TierAfterUpdate"]
 			except:
 				return "Unranked"
 	elif platform == "CONSOLE":
 		with requests.get(f"https://pd.na.a.pvp.net/mmr/v1/players/{user_id}/competitiveupdates?queue=console_competitive",
-						  headers=internal_api_headers_console) as r:
+		                  headers=internal_api_headers_console) as r:
 			try:
 				rank_tier = r.json()["Matches"][0]["TierAfterUpdate"]
 			except:
@@ -595,27 +594,25 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC"):
 	kills = 0
 	deaths = 0
 	wins = []
-	session = create_session()
 	partyIDs = {}
 
 	try:
+		url = f"https://pd.na.a.pvp.net/match-history/v1/history/{user_id}"
 		if platform == "PC":
-			url = f"https://pd.na.a.pvp.net/match-history/v1/history/{user_id}"
 			headers = internal_api_headers
 		else:
-			url = f"https://pd.na.a.pvp.net/match-history/v1/history/{user_id}"
 			headers = internal_api_headers_console
 
-		response = session.get(url, headers=headers)
+		response = requests.get(url, headers=headers)
 		history = response.json().get("History", [])
-		time.sleep(2.5)  # Delay to prevent rate limiting
+		time.sleep(1)  # Delay to prevent rate limiting
 
 		save_match_data = None
 
 		for i in history:
 			match_id = i["MatchID"]
 			match_url = f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}"
-			match_response = session.get(match_url, headers=headers)
+			match_response = requests.get(match_url, headers=headers)
 
 			match_data = match_response.json()
 			player_data = match_data.get("players", [])
@@ -641,10 +638,10 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC"):
 					kills += match["stats"]["kills"]
 					deaths += match["stats"]["deaths"]
 
+		"""
 		with open("party_ids.json", "a") as file:
 			json.dump(partyIDs, file, indent=4)
 
-		"""
 		# Check if any party members are in the same current game
 		current_parties = {}
 		for party_id, members in partyIDs.items():
@@ -656,6 +653,7 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC"):
 		with open("test_data.json", "a") as file:
 			json.dump(current_parties, file, indent=4)
 		"""
+
 		kd_ratio = calculate_kd(kills, deaths)
 		cache[user_id] = (kd_ratio, wins)
 
@@ -730,7 +728,7 @@ def get_rank_color(rank: str):
 def get_current_game_score(puuid: str) -> tuple[int, int]:
 	requests.packages.urllib3.disable_warnings()
 	with requests.get(f"https://127.0.0.1:{port}/chat/v4/presences",
-					  headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
+	                  headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
 		data = r.json()
 
 	all_user_data = data["presences"]
@@ -741,6 +739,26 @@ def get_current_game_score(puuid: str) -> tuple[int, int]:
 	allyTeamScore = decoded_user_data["partyOwnerMatchScoreAllyTeam"]
 	enemyTeamScore = decoded_user_data["partyOwnerMatchScoreEnemyTeam"]
 	return allyTeamScore, enemyTeamScore
+
+
+def get_party_symbol(number: int):
+	party_symbol = "★"
+	party_colours = [
+		"\033[38;5;196m",  # Red
+		"\033[38;5;208m",  # Orange
+		"\033[38;5;226m",  # Yellow
+		"\033[38;5;46m",  # Green
+		"\033[38;5;21m",  # Blue
+		"\033[38;5;201m",  # Magenta
+		"\033[38;5;51m",  # Cyan
+		"\033[38;5;200m",  # Pink
+		"\033[38;5;93m",  # Bright Purple
+		"\033[38;5;118m",  # Lime Green
+	]
+	reset = "\033[0m"
+
+	coloured_party_symbol = f"{party_colours[number-1]}{party_symbol}{reset} "
+	return coloured_party_symbol
 
 
 async def run_in_game(cache=None, our_team_colour: str = None):
@@ -776,18 +794,19 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 		nonlocal partys, cache
 		party_data, cache = get_playerdata_from_uuid(player_id, cache, platform)
 		partys = add_parties(partys, party_data)
+		return None
 
 	while True:
 		buffer.truncate(0)
 		buffer.seek(0)
 		try:
 			with requests.get(f"https://glz-na-1.na.a.pvp.net/core-game/v1/matches/{match_id}",
-							  headers=internal_api_headers) as r:
+			                  headers=internal_api_headers) as r:
 				if r.status_code == 400:
 					await log_in()
 				match_data = r.json()
 
-				if r.status_code != 404 and match_data["State"] != "CLOSED":
+				if r.status_code != 404 or match_data["State"] != "CLOSED":
 					map_id = match_data["MapID"]
 					gamemode_name = match_data["MatchmakingData"]["QueueID"]
 					map_name = get_mapdata_from_id(map_id)
@@ -827,7 +846,6 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 					count = 0
 					party_exists = []
 					party_number = 1
-					party_symbol = ""
 					for player in match_data["Players"]:
 						player_id = player["PlayerIdentity"]["Subject"]
 						player_data[str(player_name_cache[count])] = cache.get(str(player_id), ("Loading", "Loading"))
@@ -837,36 +855,40 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 
 					buffer.write(Fore.BLUE + "Team Blue:\n" + Style.RESET_ALL)
 					for user_name, data in team_blue_player_list.items():
+						party_symbol = ""
 						for party_id, members in partys.items():
-							if str(data[3]) in members:
-								for existing_party in party_exists:
-									if existing_party[0] == party_id:
-										party_symbol = f"({existing_party[1]}) "
+							if len(members) > 1:
+								if str(data[3]) in members:
+									for existing_party in party_exists:
+										if existing_party[0] == party_id:
+											party_symbol = get_party_symbol(int(existing_party[1]))
+											break
+									else:
+										# Assign new party number
+										party_exists.append([party_id, party_number])
+										party_symbol = get_party_symbol(int(party_number))
+										party_number += 1
 										break
-								else:
-									# Assign new party number
-									party_exists.append([party_id, party_number])
-									party_symbol = f"({party_number}) "
-									party_number += 1
-								break
 						buffer.write(Fore.BLUE + f"{party_symbol}[LVL {data[1]}] {get_rank_color(data[2])} {user_name} ({data[0]})\n" + Style.RESET_ALL)
 						kd, wins = player_data.get(user_name, ("Loading", "Loading"))
 						buffer.write(Fore.MAGENTA + f"Player KD: {kd} | Past Matches: {''.join(wins)}\n\n" + Style.RESET_ALL)
 
 					buffer.write(Fore.RED + "VS\n\nTeam Red:\n" + Style.RESET_ALL)
 					for user_name, data in team_red_player_list.items():
+						party_symbol = ""
 						for party_id, members in partys.items():
-							if str(data[3]) in members:
-								for existing_party in party_exists:
-									if existing_party[0] == party_id:
-										party_symbol = f"({existing_party[1]}) "
+							if len(members) > 1:
+								if str(data[3]) in members:
+									for existing_party in party_exists:
+										if existing_party[0] == party_id:
+											party_symbol = get_party_symbol(int(existing_party[1]))
+											break
+									else:
+										# Assign new party number
+										party_exists.append([party_id, party_number])
+										party_symbol = get_party_symbol(int(party_number))
+										party_number += 1
 										break
-								else:
-									# Assign new party number
-									party_exists.append([party_id, party_number])
-									party_symbol = f"({party_number}) "
-									party_number += 1
-								break
 						buffer.write(Fore.RED + f"{party_symbol}[LVL {data[1]}] {get_rank_color(data[2])} {user_name} ({data[0]})\n" + Style.RESET_ALL)
 						kd, wins = player_data.get(user_name, ("Loading", "Loading"))
 						buffer.write(Fore.MAGENTA + f"Player KD: {kd} | Past Matches: {''.join(wins)}\n\n" + Style.RESET_ALL)
@@ -878,7 +900,7 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 
 					try:
 						with requests.get(f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}",
-										  headers=internal_api_headers) as re_match_stats:
+						                  headers=internal_api_headers) as re_match_stats:
 							match_stats = re_match_stats.json()
 
 						total_rounds = match_stats["teams"][0]["roundsPlayed"]
@@ -887,6 +909,10 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 
 						buffer.write(Fore.YELLOW + f"Total Rounds: {total_rounds}\n" + Style.RESET_ALL)
 						buffer.write(Fore.YELLOW + f"Score: {team_1_rounds}  |  {team_2_rounds}\n" + Style.RESET_ALL)
+						if len(threads) > 0:
+							for thread in threads:
+								if thread.is_alive():
+									print("Thread is alive!")
 						await asyncio.sleep(3)
 						return
 
@@ -903,7 +929,7 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 					time.sleep(5)
 
 				else:
-					# Will fix later
+					# TODO | Will fix later
 					"""
 					clear_console()
 					print("Match Ended!")
@@ -913,10 +939,12 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 						print(line)
 					input("\nPress any key to continue")
 					"""
-					return
+					return None
 
 		except Exception as e:
 			await log_in()
+			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+			log.log("logs/ValorantLoader", 1, traceback_str)
 			print("this")
 			print(e)
 
@@ -958,14 +986,14 @@ async def run_pregame(data: dict):
 		nonlocal cache, partys
 		party_data, cache = get_playerdata_from_uuid(player_id, cache, platform)
 		partys = add_parties(partys, party_data)
-		return
+		return None
 
 	while True:
 		buffer.truncate(0)
 		buffer.seek(0)
 		try:
 			with requests.get(f"https://glz-na-1.na.a.pvp.net/pregame/v1/matches/{data['MatchID']}",
-							  headers=internal_api_headers) as r:
+			                  headers=internal_api_headers) as r:
 				match_data = r.json()
 				with open("pre_match_data.json", "w") as f:
 					json.dump(match_data, f, indent=4)
@@ -1014,24 +1042,25 @@ async def run_pregame(data: dict):
 
 				# Ensure the rank color is applied correctly
 				for party_id, members in partys.items():
-					if ally_player["PlayerIdentity"]["Subject"] in members:
-						for existing_party in party_exists:
-							if existing_party[0] == party_id:
-								party_symbol = f"({existing_party[1]}) "
+					if len(members) > 1:
+						if ally_player["PlayerIdentity"]["Subject"] in members:
+							for existing_party in party_exists:
+								if existing_party[0] == party_id:
+									party_symbol = get_party_symbol(int(existing_party[1]))
+									break
+							else:
+								# Assign new party number
+								party_exists.append([party_id, party_number])
+								party_symbol = get_party_symbol(int(party_number))
+								party_number += 1
 								break
-						else:
-							# Assign new party number
-							party_exists.append([party_id, party_number])
-							party_symbol = f"({party_number}) "
-							party_number += 1
-						break
 
 				if state == "":
-					buffer.write(color_text(f"{party_symbol}[LVL {player_level}] {get_rank_color(rank)} {user_name}: {agent_name} (Picking)\n", Fore.YELLOW))
+					buffer.write(f"{party_symbol}{color_text(f'[LVL {player_level}]', Fore.YELLOW)} {get_rank_color(rank)} {user_name}: {agent_name} (Picking)\n")
 				elif state == "selected":
-					buffer.write(color_text(f"{party_symbol}[LVL {player_level}] {get_rank_color(rank)} {user_name}: {agent_name} (Hovering)\n", Fore.BLUE))
+					buffer.write(f"{party_symbol}{color_text(f'[LVL {player_level}]', Fore.BLUE)} {get_rank_color(rank)} {user_name}: {agent_name} (Hovering)\n")
 				else:
-					buffer.write(color_text(f"{party_symbol}[LVL {player_level}] {get_rank_color(rank)} {user_name}: {agent_name} (Locked)\n", Fore.GREEN))
+					buffer.write(f"{party_symbol}{color_text(f'[LVL {player_level}]', Fore.GREEN)} {get_rank_color(rank)} {user_name}: {agent_name} (Locked)\n")
 
 				kd, wins = cache.get(str(ally_player["PlayerIdentity"]["Subject"]), ("Loading", "Loading"))
 				buffer.write(color_text(f"Player KD: {kd} | Past Matches: {''.join(wins)}\n\n", Fore.MAGENTA))
@@ -1054,11 +1083,14 @@ async def run_pregame(data: dict):
 			time.sleep(0.5)
 
 		except Exception as e:
+			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+			log.log("logs/ValorantLoader", 1, traceback_str)
 			raise e
 			print("this 1")
 			print(e)
 
 	await run_in_game(cache, our_team_colour)
+	return
 
 
 def clear_console():
@@ -1110,14 +1142,13 @@ async def listen_for_input(party_id: str):
 
 async def get_party():
 	cancel = False
-	party_id = None
 	buffer = StringIO()
 	last_rendered_content = ""
 	input_task = None  # Task for input handling
-
+	got_rank = {}
 	while True:
+		await check_if_user_in_pregame()
 		try:
-			await check_if_user_in_pregame()
 			buffer.truncate(0)
 			buffer.seek(0)
 
@@ -1146,11 +1177,11 @@ async def get_party():
 				is_queueing = party_data["State"]
 				if is_queueing == "MATCHMAKING":
 					message_list.append(color_text("Queueing!\n", Fore.YELLOW))
-					await check_if_user_in_pregame()
 					last_rendered_content = ""
 					cancel = True
+					await check_if_user_in_pregame()
 
-				is_console = str(party_data["Members"][0]["PlatformType"]).lower() == "console"
+				# is_console = str(party_data["Members"][0]["PlatformType"]).lower() == "console"
 				game_mode = str(party_data["MatchmakingData"]["QueueID"]).capitalize()
 				message_list.append(color_text(f"Mode: {game_mode}\n\n", Fore.GREEN))
 
@@ -1159,9 +1190,14 @@ async def get_party():
 					is_leader = bool(member.get("IsOwner", False))
 					player_lvl = str(member["PlayerIdentity"]["AccountLevel"])
 
-					color = Fore.YELLOW if is_user else (Fore.MAGENTA if is_leader else Fore.WHITE)
+					color = Fore.YELLOW if is_user else (Fore.LIGHTRED_EX if is_leader else Fore.WHITE)
 					leader_text = "[Leader] " if is_leader else ""
-					message_list.append(color_text(f"{leader_text}[LVL {player_lvl}] {player_name}\n", color))
+					if str(member["Subject"]) not in got_rank.keys():
+						player_rank_str = get_rank_color(get_rank_from_uuid(str(member['Subject'])))
+						got_rank[str(member["Subject"])] = player_rank_str
+					else:
+						player_rank_str = got_rank[str(member["Subject"])]
+					message_list.append(color_text(f"{leader_text}[LVL {player_lvl}] {player_name} {player_rank_str}\n", color))
 
 				current_rendered_content = ''.join(message_list)
 
@@ -1171,11 +1207,11 @@ async def get_party():
 					clear_console()
 					print_buffered(buffer)
 
-				await asyncio.sleep(0.5)
+				await asyncio.sleep(0.25)
 
 				if cancel:
-					await check_if_user_in_pregame()
 					last_rendered_content = ""
+					await check_if_user_in_pregame()
 					break
 			else:
 				new_message = color_text("Valorant is not running for that user!\n", Fore.RED)
@@ -1185,9 +1221,13 @@ async def get_party():
 					print_buffered(buffer)
 				await asyncio.sleep(3.5)
 		except Exception as e:
-			pass
-	# print("Re-logging In!")
-	# await log_in()
+			await log_in()
+			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+			log.log("logs/ValorantLoader", 1, traceback_str)
+
+
+# print("Re-logging In!")
+# await log_in()
 
 
 async def check_if_user_in_pregame(send_message: bool = False):
@@ -1196,7 +1236,7 @@ async def check_if_user_in_pregame(send_message: bool = False):
 
 	# Try pregame
 	with requests.get(f"https://glz-na-1.na.a.pvp.net/pregame/v1/players/{val_uuid}",
-					  headers=internal_api_headers) as r:
+	                  headers=internal_api_headers) as r:
 		data = r.json()
 	try:
 		if data["errorCode"] == "RESOURCE_NOT_FOUND":
@@ -1208,7 +1248,7 @@ async def check_if_user_in_pregame(send_message: bool = False):
 
 	# Try playing in-game
 	with requests.get(f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}",
-					  headers=internal_api_headers) as r:
+	                  headers=internal_api_headers) as r:
 		data = r.json()
 	try:
 		if data["errorCode"] == "RESOURCE_NOT_FOUND":
@@ -1239,6 +1279,7 @@ async def main():
 	logged_in = await log_in()
 	if logged_in:
 		name, tag = get_userdata_from_token()
+		log.log("logs/ValorantLoader", 3, f"Logged in as: {name}#{tag}")
 		while True:
 			try:
 				print(f"\nYou have been logged in! Welcome, {name.capitalize()}")
@@ -1247,7 +1288,7 @@ async def main():
 				clear_console()
 				if user_input == "1":
 					# Get valorant shop
-					val_shop_checker()
+					await val_shop_checker()
 				elif user_input == "2":
 					while True:
 						# Check if user is selecting an agent / pregame
@@ -1257,6 +1298,7 @@ async def main():
 						await get_party()
 			except Exception as e:
 				traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+				log.log("logs/ValorantLoader", 1, traceback_str)
 				print(f"An Error Has Happened!\n{traceback_str}")
 	else:
 		time.sleep(5)
