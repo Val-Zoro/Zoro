@@ -1,4 +1,4 @@
-VERSION = "v2.0.0"
+VERSION = "v2.0.1"
 
 import asyncio
 import threading
@@ -556,6 +556,8 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC"):
 		history = response.json().get("History", [])
 		time.sleep(2.5)  # Delay to prevent rate limiting
 
+		save_match_data = None
+
 		for i in history:
 			match_id = i["MatchID"]
 			match_url = f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}"
@@ -568,11 +570,14 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC"):
 				if str(match["subject"]) == str(user_id):
 					partyId = match["partyId"]
 
-					# Add player to their party
-					if partyId not in partyIDs:
-						partyIDs[partyId] = [match["subject"]]
-					else:
-						partyIDs[partyId].append(match["subject"])
+					if save_match_data is None:
+						# Add player to their party, avoiding duplicates
+						if partyId not in partyIDs:
+							partyIDs[partyId] = [match["subject"]]
+						else:
+							if match["subject"] not in partyIDs[partyId]:
+								partyIDs[partyId].append(match["subject"])
+						save_match_data = player_data
 
 					# Collect kill/death and win data
 					team = match["teamId"]
@@ -582,21 +587,25 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC"):
 					kills += match["stats"]["kills"]
 					deaths += match["stats"]["deaths"]
 
-		# Filter out solo players (party with only one member)
-		filtered_parties = {k: v for k, v in partyIDs.items() if len(v) > 1}
+		with open("party_ids.json", "a") as file:
+			json.dump(partyIDs, file, indent=4)
 
+		"""
 		# Check if any party members are in the same current game
 		current_parties = {}
-		for party_id, members in filtered_parties.items():
+		for party_id, members in partyIDs.items():
 			for member in members:
-				if any(player["subject"] == member for player in player_data):
-					current_parties[party_id] = members
+				if any(str(player["subject"]) == str(member) for player in save_match_data):
+					current_parties[party_id] = member
 					break
 
+		with open("test_data.json", "a") as file:
+			json.dump(current_parties, file, indent=4)
+		"""
 		kd_ratio = calculate_kd(kills, deaths)
 		cache[user_id] = (kd_ratio, wins)
 
-		return current_parties, cache
+		return partyIDs, cache
 
 	except Exception as e:
 		print(f"Error: {e}")
@@ -707,9 +716,12 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 	team_blue_player_list = {}
 	team_red_player_list = {}
 
+	partys = {}
+
 	def fetch_player_data(player_id, platform):
-		nonlocal cache
-		_, cache = get_playerdata_from_uuid(player_id, cache, platform)
+		nonlocal partys, cache
+		party_data, cache = get_playerdata_from_uuid(player_id, cache, platform)
+		partys = add_parties(partys, party_data)
 
 	while True:
 		buffer.truncate(0)
@@ -752,27 +764,56 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 								thread.start()
 
 							if team_id.lower() == "blue":
-								team_blue_player_list[host_player] = (agent_name, player_lvl, rank)
+								team_blue_player_list[host_player] = (agent_name, player_lvl, rank, player_id)
 							elif team_id.lower() == "red":
-								team_red_player_list[host_player] = (agent_name, player_lvl, rank)
+								team_red_player_list[host_player] = (agent_name, player_lvl, rank, player_id)
 
 							player_data[host_player] = cache.get(str(player_id), ("Loading", "Loading"))
 
 					count = 0
+					party_exists = []
+					party_number = 1
+					party_symbol = ""
 					for player in match_data["Players"]:
 						player_id = player["PlayerIdentity"]["Subject"]
 						player_data[str(player_name_cache[count])] = cache.get(str(player_id), ("Loading", "Loading"))
 						count += 1
 
+					# Ensure the rank color is applied correctly
+
 					buffer.write(Fore.BLUE + "Team Blue:\n" + Style.RESET_ALL)
 					for user_name, data in team_blue_player_list.items():
-						buffer.write(Fore.BLUE + f"[LVL {data[1]}] {get_rank_color(data[2])} {user_name} ({data[0]})\n" + Style.RESET_ALL)
+						for party_id, members in partys.items():
+							if str(data[3]) in members:
+								for existing_party in party_exists:
+									if existing_party[0] == party_id:
+										party_symbol = f"({existing_party[1]}) "
+										break
+								else:
+									# Assign new party number
+									party_exists.append([party_id, party_number])
+									party_symbol = f"({party_number}) "
+									party_number += 1
+								break
+						buffer.write(Fore.BLUE + f"{party_symbol}[LVL {data[1]}] {get_rank_color(data[2])} {user_name} ({data[0]})\n" + Style.RESET_ALL)
 						kd, wins = player_data.get(user_name, ("Loading", "Loading"))
 						buffer.write(Fore.MAGENTA + f"Player KD: {kd} | Past Matches: {''.join(wins)}\n\n" + Style.RESET_ALL)
 
 					buffer.write(Fore.RED + "VS\n\nTeam Red:\n" + Style.RESET_ALL)
 					for user_name, data in team_red_player_list.items():
-						buffer.write(Fore.RED + f"[LVL {data[1]}] {get_rank_color(data[2])} {user_name} ({data[0]})\n" + Style.RESET_ALL)
+						for party_id, members in partys.items():
+							if str(data[3]) in members:
+								for existing_party in party_exists:
+									if existing_party[0] == party_id:
+										party_symbol = f"({existing_party[1]}) "
+										break
+								else:
+									# Assign new party number
+									party_exists.append([party_id, party_number])
+									party_symbol = f"({party_number}) "
+									party_number += 1
+								break
+						buffer.write(Fore.RED + f"{party_symbol}[LVL {data[1]}] {get_rank_color(data[2])} {user_name} ({data[0]})\n" + Style.RESET_ALL)
 						kd, wins = player_data.get(user_name, ("Loading", "Loading"))
 						buffer.write(Fore.MAGENTA + f"Player KD: {kd} | Past Matches: {''.join(wins)}\n\n" + Style.RESET_ALL)
 
@@ -808,6 +849,7 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 					time.sleep(5)
 
 				else:
+					# Will fix later
 					"""
 					clear_console()
 					print("Match Ended!")
@@ -820,6 +862,7 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 					return
 
 		except Exception as e:
+			await log_in()
 			print("this")
 			print(e)
 
@@ -828,6 +871,20 @@ def print_buffered(buffer):
 	"""Print content from a buffer without clearing the screen."""
 	sys.stdout.write(buffer.getvalue())
 	sys.stdout.flush()
+
+
+def add_parties(partys, new_parties):
+	with open("partys_thing.json", "a") as file:
+		json.dump(partys, file, indent=4)
+	for party_id, new_players in new_parties.items():
+		if party_id in partys:
+			# Add new players to the existing party, ensuring no duplicates
+			partys[party_id].extend(new_players)
+			partys[party_id] = list(set(partys[party_id]))  # Remove duplicates
+		else:
+			# Create a new party with the new players
+			partys[party_id] = new_players
+	return partys
 
 
 async def run_pregame(data: dict):
@@ -841,11 +898,12 @@ async def run_pregame(data: dict):
 	last_rendered_content = ""
 
 	cache = {}
-	partys: {str, list[str]} = {}
+	partys = {}
 
 	def fetch_player_data(player_id, platform):
-		nonlocal partys, cache
-		partys, cache = get_playerdata_from_uuid(player_id, cache, platform)
+		nonlocal cache, partys
+		party_data, cache = get_playerdata_from_uuid(player_id, cache, platform)
+		partys = add_parties(partys, party_data)
 		return
 
 	while True:
@@ -1074,8 +1132,8 @@ async def get_party():
 				await asyncio.sleep(3.5)
 		except Exception as e:
 			pass
-			# print("Re-logging In!")
-			# await log_in()
+	# print("Re-logging In!")
+	# await log_in()
 
 
 async def check_if_user_in_pregame(send_message: bool = False):
