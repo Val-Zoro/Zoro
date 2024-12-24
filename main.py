@@ -1,4 +1,4 @@
-VERSION = "v2.0.1"
+VERSION = "v2.0.2"
 
 import asyncio
 import threading
@@ -8,7 +8,6 @@ import configparser
 import traceback
 import sys
 import aiohttp
-import logger
 import colorama
 import json
 import requests
@@ -17,12 +16,12 @@ import ssl
 from base64 import b64encode, b64decode
 from io import StringIO
 from colorama import Fore, Style
-from auth import RiotAuth
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry  # noqa
 from pathlib import Path
-from tkinter import ttk, Tk
-from PIL import ImageTk, Image
+from tkinter import Tk, ttk, Canvas, Frame, Scrollbar
+from tkinter import Label as tkLabel
+from PIL import Image, ImageTk
 
 val_token = ""
 val_access_token = ""
@@ -42,8 +41,6 @@ config.read("/".join([parentdir, "config.ini"]))
 
 OUTPUT_PATH = Path(__file__).parent
 ASSETS_PATH = OUTPUT_PATH / Path("./assets")
-
-logger.log(str(OUTPUT_PATH.name), 3, "Started")
 
 
 def convert_time(sec):
@@ -94,10 +91,7 @@ def create_riot_auth_ssl_ctx() -> ssl.SSLContext:
 	ssl_ctx.set_alpn_protocols(["http/1.1"])
 	ssl_ctx.options |= 1 << 19  # SSL_OP_NO_ENCRYPT_THEN_MAC
 	ssl_ctx.options |= 1 << 14  # SSL_OP_NO_TICKET
-	libssl.SSL_CTX_set_ciphersuites(ssl_ctx_addr, RiotAuth.CIPHERS13.encode())
-	libssl.SSL_CTX_set_cipher_list(ssl_ctx_addr, RiotAuth.CIPHERS.encode())
 	# setting SSL_CTRL_SET_SIGALGS_LIST
-	libssl.SSL_CTX_ctrl(ssl_ctx_addr, 98, 0, RiotAuth.SIGALGS.encode())
 	# setting SSL_CTRL_SET_GROUPS_LIST
 	libssl.SSL_CTX_ctrl(ssl_ctx_addr, 92, 0, ":".join(
 		(
@@ -144,7 +138,7 @@ async def get_user_data_from_riot_client():
 
 
 async def log_in() -> bool:
-	global val_token, val_access_token, val_user_id, val_entitlements_token, val_uuid
+	global val_token, val_access_token, val_entitlements_token, val_uuid
 	user_data = await get_user_data_from_riot_client()
 
 	if user_data is not None:
@@ -152,7 +146,6 @@ async def log_in() -> bool:
 		val_access_token = user_data[0]
 		val_entitlements_token = user_data[1]
 		val_uuid = user_data[2]
-		val_user_id = user_data[2]
 
 		get_headers()
 
@@ -189,7 +182,7 @@ def val_shop_checker():
 		get_headers()
 
 		# Fetch data from API
-		response = requests.post(f"https://pd.na.a.pvp.net/store/v3/storefront/{val_user_id}",
+		response = requests.post(f"https://pd.na.a.pvp.net/store/v3/storefront/{val_uuid}",
 								 headers=internal_api_headers, json={})
 		data = response.json()
 
@@ -266,87 +259,148 @@ def val_shop_checker():
 			nm_offers.append(nmdata['data']['displayName'])  # names of daily items
 			nm_images.append(nmdata['data']['displayIcon'])  # images of daily items
 
-		main_gui(vp, rp, current_bundles, bundles_images, bundle_prices, skin_names, skin_images, singleweapons_prices, skin_videos, nm_offers, nm_price, nm_images)
+		main_gui(vp, rp, current_bundles, bundles_images, bundle_prices, skin_names, skin_images, singleweapons_prices, nm_offers, nm_price, nm_images)
 
 	except Exception as e:
 		print(f"Error: {e}")
 
 
-def main_gui(vp, rp, current_bundles, bundles_images, bundle_prices, skin_names, skin_images, singleweapons_prices, skin_videos, nm_offers, nm_price, nm_images):
-	def open_url(url):
-		import webbrowser
-		webbrowser.open(url)
-
+def main_gui(vp, rp, current_bundles, bundles_images, bundle_prices, skin_names, skin_images, singleweapons_prices, nm_offers, nm_price, nm_images):
 	root = Tk()
 	root.title("Valorant Shop Checker")
-	root.geometry("1000x700")
-	root.configure(bg='#2e2e2e')  # Dark gray background
+	root.configure(bg="#1e1e1e")  # Dark background for a modern look
 
-	# Title Label
-	title = ttk.Label(root, text="Valorant Shop Checker", font=("Helvetica", 18), foreground="white", background="#2e2e2e")
-	title.pack(pady=10)
+	# Styling with ttk themes
+	style = ttk.Style()
+	style.configure("TFrame", background="#1e1e1e")
+	style.configure("TLabelframe", background="#1e1e1e", foreground="white", borderwidth=0)
+	style.configure("TLabel", background="#1e1e1e", foreground="white", font=("Helvetica", 12, "bold"))
+	style.map("TLabelframe", relief=[("!active", "flat"), ("pressed", "ridge")])
+
+	# Title Section
+	title = tkLabel(root, text="Valorant Shop Checker", font=("Helvetica", 24, "bold"), fg="white", bg="#1e1e1e")
+	title.pack(pady=20)
 
 	# Points Section
 	points_frame = ttk.Frame(root)
-	points_frame.pack(pady=5)
+	points_frame.pack(pady=10)
 
-	vp_label = ttk.Label(points_frame, text=f"Valorant Points (VP): {vp}", font=("Helvetica", 12), foreground="white", background='#2e2e2e')
-	vp_label.grid(row=0, column=0, padx=10)
+	vp_label = ttk.Label(points_frame, text=f"Valorant Points (VP): {vp}", font=("Helvetica", 14), style="TLabel")
+	vp_label.grid(row=0, column=0, padx=20)
 
-	rp_label = ttk.Label(points_frame, text=f"Radianite Points (RP): {rp}", font=("Helvetica", 12), foreground="white", background='#2e2e2e')
-	rp_label.grid(row=0, column=1, padx=10)
+	rp_label = ttk.Label(points_frame, text=f"Radianite Points (RP): {rp}", font=("Helvetica", 14), style="TLabel")
+	rp_label.grid(row=0, column=1, padx=20)
+
+	# Scrollable Frame Setup
+	def create_scrollable_frame(parent):
+		canvas = Canvas(parent, bg="#1e1e1e", highlightthickness=0)
+		scrollable_frame = Frame(canvas, bg="#1e1e1e")
+		scrollbar = Scrollbar(parent, orient="vertical", command=canvas.yview)
+		canvas.configure(yscrollcommand=scrollbar.set)
+
+		scrollbar.pack(side="right", fill="y")
+		canvas.pack(side="left", fill="both", expand=True)
+		canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+
+		scrollable_frame.bind(
+			"<Configure>",
+			lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+		)
+
+		return scrollable_frame
+
+	# Helper function to resize images while keeping the aspect ratio
+	def resize_image(image, max_width, max_height):
+		original_width, original_height = image.size
+		ratio = min(max_width / original_width, max_height / original_height)
+		new_size = (int(original_width * ratio), int(original_height * ratio))
+		return image.resize(new_size, Image.Resampling.LANCZOS)
 
 	# Bundles Section
-	bundles_frame = ttk.LabelFrame(root, text="Bundles", labelanchor="n")
-	bundles_frame.pack(fill="x", pady=10)
+	bundles_frame = ttk.LabelFrame(root, text="Bundles", style="TLabelframe")
+	bundles_frame.pack(fill="x", pady=10, padx=20)
+
+	bundles_scrollable = create_scrollable_frame(bundles_frame)
 
 	for i, bundle in enumerate(current_bundles):
 		bundle_image = Image.open(requests.get(bundles_images[i], stream=True).raw)
-		bundle_image = bundle_image.resize((150, 150))  # Keep aspect ratio intact
+		bundle_image = resize_image(bundle_image, 300, 150)
 		img = ImageTk.PhotoImage(bundle_image)
 
-		img_label = ttk.Label(bundles_frame, image=img, background='#3c3c3c')
+		img_label = tkLabel(bundles_scrollable, image=img, bg="#2a2a2a", bd=0, highlightthickness=0)
 		img_label.image = img
-		img_label.grid(row=0, column=i)
+		img_label.grid(row=i, column=0, pady=10, padx=10, sticky="ew")
 
-		bundle_label = ttk.Label(bundles_frame, text=f"{bundle}\nPrice: {bundle_prices[i]} VP", anchor="center", font=("Helvetica", 10), foreground="white", background='#3c3c3c')
-		bundle_label.grid(row=1, column=i)
+		bundle_label = tkLabel(
+			bundles_scrollable,
+			text=f"{bundle}\nPrice: {bundle_prices[i]} VP",
+			font=("Helvetica", 12, "bold"),
+			fg="white",
+			bg="#2a2a2a",
+			justify="center",
+		)
+		bundle_label.grid(row=i, column=1, pady=10, padx=10, sticky="ew")
 
-	# Skins Section
-	skins_frame = ttk.LabelFrame(root, text="Daily Skins", labelanchor="n")
-	skins_frame.pack(fill="x", pady=10)
+	# Daily Skins Section
+	skins_frame = ttk.LabelFrame(root, text="Daily Skins", style="TLabelframe")
+	skins_frame.pack(fill="x", pady=10, padx=20)
+
+	skins_scrollable = create_scrollable_frame(skins_frame)
 
 	for i, skin in enumerate(skin_names):
 		skin_image = Image.open(requests.get(skin_images[i], stream=True).raw)
-		skin_image = skin_image.resize((120, 120))  # Keep aspect ratio intact
+		skin_image = resize_image(skin_image, 120, 120)
 		img = ImageTk.PhotoImage(skin_image)
 
-		img_label = ttk.Label(skins_frame, image=img, background='#3c3c3c')
+		img_label = tkLabel(skins_scrollable, image=img, bg="#2a2a2a", bd=0, highlightthickness=0)
 		img_label.image = img
-		img_label.grid(row=i // 4, column=i % 4, padx=10, pady=10)  # 4 items per row
+		img_label.grid(row=i, column=0, pady=10, padx=10, sticky="ew")
 
-		skin_label = ttk.Label(skins_frame, text=f"{skin}\nPrice: {singleweapons_prices[i]} VP", font=("Helvetica", 10), foreground="white", background='#3c3c3c')
-		skin_label.grid(row=i // 4 + 1, column=i % 4, padx=10)
+		skin_label = tkLabel(
+			skins_scrollable,
+			text=f"{skin}\nPrice: {singleweapons_prices[i]} VP",
+			font=("Helvetica", 10, "bold"),
+			fg="white",
+			bg="#2a2a2a",
+			justify="center",
+		)
+		skin_label.grid(row=i, column=1, pady=10, padx=10, sticky="ew")
 
 	# Night Market Section
-	night_market_frame = ttk.LabelFrame(root, text="Night Market", labelanchor="n")
-	night_market_frame.pack(fill="x", pady=10)
+	night_market_frame = ttk.LabelFrame(root, text="Night Market", style="TLabelframe")
+	night_market_frame.pack(fill="x", pady=10, padx=20)
+
+	night_market_scrollable = create_scrollable_frame(night_market_frame)
 
 	if nm_offers:
 		for i, offer in enumerate(nm_offers):
 			nm_image = Image.open(requests.get(nm_images[i], stream=True).raw)
-			nm_image = nm_image.resize((120, 120))  # Keep aspect ratio intact
+			nm_image = resize_image(nm_image, 120, 120)
 			img = ImageTk.PhotoImage(nm_image)
 
-			img_label = ttk.Label(night_market_frame, image=img, background='#3c3c3c')
+			img_label = tkLabel(night_market_scrollable, image=img, bg="#2a2a2a", bd=0, highlightthickness=0)
 			img_label.image = img
-			img_label.grid(row=i // 4, column=i % 4, padx=10, pady=10)
+			img_label.grid(row=i, column=0, pady=10, padx=10, sticky="ew")
 
-			offer_label = ttk.Label(night_market_frame, text=f"{offer}\nPrice: {nm_price[i]} VP", font=("Helvetica", 10), foreground="white", background='#3c3c3c')
-			offer_label.grid(row=i // 4 + 1, column=i % 4, padx=10)
+			offer_label = tkLabel(
+				night_market_scrollable,
+				text=f"{offer}\nPrice: {nm_price[i]} VP",
+				font=("Helvetica", 10, "bold"),
+				fg="white",
+				bg="#2a2a2a",
+				justify="center",
+			)
+			offer_label.grid(row=i, column=1, pady=10, padx=10, sticky="ew")
 
 	else:
-		empty_label = ttk.Label(night_market_frame, text="Night Market is currently unavailable.", font=("Helvetica", 10), foreground="white", background='#3c3c3c')
+		empty_label = tkLabel(
+			night_market_scrollable,
+			text="Night Market is currently unavailable.",
+			font=("Helvetica", 12, "bold"),
+			fg="white",
+			bg="#2a2a2a",
+			justify="center",
+		)
 		empty_label.pack()
 
 	root.mainloop()
@@ -1185,7 +1239,6 @@ async def main():
 	logged_in = await log_in()
 	if logged_in:
 		name, tag = get_userdata_from_token()
-		logger.log(str(OUTPUT_PATH.name), 4, f"Logged in with {name}#{tag}")
 		while True:
 			try:
 				print(f"\nYou have been logged in! Welcome, {name.capitalize()}")
@@ -1205,7 +1258,6 @@ async def main():
 			except Exception as e:
 				traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 				print(f"An Error Has Happened!\n{traceback_str}")
-				logger.log(str(OUTPUT_PATH.name), 1, f"{traceback_str}")
 	else:
 		time.sleep(5)
 
