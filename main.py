@@ -1,4 +1,4 @@
-VERSION = "v2.0.4"
+VERSION = "v2.0.5"
 
 import asyncio
 import threading
@@ -104,7 +104,7 @@ class Logger:
 
 	def _get_log_filename(self) -> str:
 		now = self._timestamp()
-		return f"{self.file_name}_{now.strftime('%Y-%m-%d')}.{self.file_ending}"
+		return f"{self.file_name}_{now.strftime('%Y-%m-%d')}{self.file_ending}"
 
 	def _is_file_large(self, full_log_file_name: str) -> bool:
 		return os.path.exists(full_log_file_name) and os.path.getsize(full_log_file_name) >= self.MAX_FILE_SIZE
@@ -377,6 +377,8 @@ async def val_shop_checker():
 		main_gui(vp, rp, current_bundles, bundles_images, bundle_prices, skin_names, skin_images, singleweapons_prices, nm_offers, nm_price, nm_images)
 
 	except Exception as e:
+		traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+		logger.log(1, traceback_str)
 		print(f"Error: {e}")
 
 
@@ -710,25 +712,27 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC"):
 	kills = 0
 	deaths = 0
 	wins = []
+	session = create_session()
 	partyIDs = {}
 
 	try:
-		url = f"https://pd.na.a.pvp.net/match-history/v1/history/{user_id}"
 		if platform == "PC":
+			url = f"https://pd.na.a.pvp.net/match-history/v1/history/{user_id}"
 			headers = internal_api_headers
 		else:
+			url = f"https://pd.na.a.pvp.net/match-history/v1/history/{user_id}"
 			headers = internal_api_headers_console
 
-		response = requests.get(url, headers=headers)
+		response = session.get(url, headers=headers)
 		history = response.json().get("History", [])
-		time.sleep(1)  # Delay to prevent rate limiting
+		time.sleep(2.5)  # Delay to prevent rate limiting
 
 		save_match_data = None
 
 		for i in history:
 			match_id = i["MatchID"]
 			match_url = f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}"
-			match_response = requests.get(match_url, headers=headers)
+			match_response = session.get(match_url, headers=headers)
 
 			match_data = match_response.json()
 			player_data = match_data.get("players", [])
@@ -754,10 +758,10 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC"):
 					kills += match["stats"]["kills"]
 					deaths += match["stats"]["deaths"]
 
-		"""
 		with open("party_ids.json", "a") as file:
 			json.dump(partyIDs, file, indent=4)
 
+		"""
 		# Check if any party members are in the same current game
 		current_parties = {}
 		for party_id, members in partyIDs.items():
@@ -769,7 +773,6 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC"):
 		with open("test_data.json", "a") as file:
 			json.dump(current_parties, file, indent=4)
 		"""
-
 		kd_ratio = calculate_kd(kills, deaths)
 		cache[user_id] = (kd_ratio, wins)
 
@@ -795,6 +798,8 @@ def get_members_of_party_from_uuid(player_id: str):
 				party_id = r.json()['CurrentPartyID']
 
 		except Exception as e:
+			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+			logger.log(1, traceback_str)
 			raise e
 			party_id = None
 
@@ -924,7 +929,10 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 
 				if r.status_code != 404 or match_data["State"] != "CLOSED":
 					map_id = match_data["MapID"]
-					gamemode_name = match_data["MatchmakingData"]["QueueID"]
+					try:
+						gamemode_name = match_data["MatchmakingData"]["QueueID"]
+					except TypeError:
+						gamemode_name = match_data["ProvisioningFlow"]
 					map_name = get_mapdata_from_id(map_id)
 
 					buffer.write(Fore.GREEN + f"Map: {map_name}\n" + Style.RESET_ALL)
@@ -985,7 +993,7 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 										party_symbol = get_party_symbol(int(party_number))
 										party_number += 1
 										break
-						buffer.write(Fore.BLUE + f"{party_symbol}[LVL {data[1]}] {get_rank_color(data[2])} {user_name} ({data[0]})\n" + Style.RESET_ALL)
+						buffer.write(Fore.BLUE + f"{party_symbol}{color_text(f'[LVL {data[1]}]', Fore.BLUE)} {get_rank_color(data[2])} {user_name} ({data[0]})\n" + Style.RESET_ALL)
 						kd, wins = player_data.get(user_name, ("Loading", "Loading"))
 						buffer.write(Fore.MAGENTA + f"Player KD: {kd} | Past Matches: {''.join(wins)}\n\n" + Style.RESET_ALL)
 
@@ -1005,7 +1013,7 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 										party_symbol = get_party_symbol(int(party_number))
 										party_number += 1
 										break
-						buffer.write(Fore.RED + f"{party_symbol}[LVL {data[1]}] {get_rank_color(data[2])} {user_name} ({data[0]})\n" + Style.RESET_ALL)
+						buffer.write(Fore.RED + f"{party_symbol}{color_text(f'[LVL {data[1]}]', Fore.RED)} {get_rank_color(data[2])} {user_name} ({data[0]})\n" + Style.RESET_ALL)
 						kd, wins = player_data.get(user_name, ("Loading", "Loading"))
 						buffer.write(Fore.MAGENTA + f"Player KD: {kd} | Past Matches: {''.join(wins)}\n\n" + Style.RESET_ALL)
 
@@ -1385,7 +1393,7 @@ def get_userdata_from_token() -> tuple[str, str]:
 			return account_name, account_tag
 		except Exception as e:
 			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-			logger.log(3, f"Failed to get account name/tag: {e}")
+			logger.log(3, f"Failed to get account name/tag: {traceback_str}")
 			return "None", "None"
 
 
