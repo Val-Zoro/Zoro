@@ -1,4 +1,4 @@
-VERSION = "v2.0.5"
+VERSION = "v2.0.6"
 
 import asyncio
 import threading
@@ -9,10 +9,10 @@ import traceback
 import sys
 import aiohttp
 import colorama
-import json
 import requests
 import ssl
 
+from json import dump, loads
 from platform import system, version
 from wmi import WMI
 from Crypto.PublicKey import RSA
@@ -58,6 +58,15 @@ pub_key = ("-----BEGIN PUBLIC KEY-----\n"
            "5OmRNvohCFM3WpP1vAdNxrsQT8uSuExbH4g7uDT/l5+ZdpxytzEzGdvPezmPiXhL\n"
            "5QIDAQAB\n"
            "-----END PUBLIC KEY-----")
+
+BANNER = """
+██╗   ██╗ █████╗ ██╗      ██████╗ ██████╗  █████╗ ███╗   ██╗████████╗    ██╗      ██████╗  █████╗ ██████╗ ███████╗██████╗ 
+██║   ██║██╔══██╗██║     ██╔═══██╗██╔══██╗██╔══██╗████╗  ██║╚══██╔══╝    ██║     ██╔═══██╗██╔══██╗██╔══██╗██╔════╝██╔══██╗
+██║   ██║███████║██║     ██║   ██║██████╔╝███████║██╔██╗ ██║   ██║       ██║     ██║   ██║███████║██║  ██║█████╗  ██████╔╝
+╚██╗ ██╔╝██╔══██║██║     ██║   ██║██╔══██╗██╔══██║██║╚██╗██║   ██║       ██║     ██║   ██║██╔══██║██║  ██║██╔══╝  ██╔══██╗
+ ╚████╔╝ ██║  ██║███████╗╚██████╔╝██║  ██║██║  ██║██║ ╚████║   ██║       ███████╗╚██████╔╝██║  ██║██████╔╝███████╗██║  ██║
+  ╚═══╝  ╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝       ╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═╝ 
+"""
 
 
 class Logger:
@@ -173,7 +182,6 @@ def convert_time(sec):
 
 
 def create_riot_auth_ssl_ctx() -> ssl.SSLContext:
-	import sys
 	import ctypes
 	from typing import Optional
 	import contextlib
@@ -253,7 +261,7 @@ async def get_user_data_from_riot_client():
 				return None
 		return return_data["accessToken"], return_data["token"], return_data["subject"]
 	else:
-		raise Exception("Error")
+		raise Exception("Riot Client Login Password Not Found!")
 
 
 async def log_in() -> bool:
@@ -297,17 +305,18 @@ def get_headers():
 
 
 async def val_shop_checker():
+	print("Loading Shop...")
 	await log_in()
 	try:
 		get_headers()
 
-		# Fetch data from API
+		# Fetch player store data
 		response = requests.post(f"https://pd.na.a.pvp.net/store/v3/storefront/{val_uuid}",
 		                         headers=internal_api_headers, json={})
 		data = response.json()
 
-		with open("data.json", "w") as f:
-			json.dump(data, f, indent=4)
+		with open("data.json", "w") as file:
+			dump(data, file, indent=4)
 
 		GetPoints = requests.get(f"https://pd.na.a.pvp.net/store/v1/wallet/{val_uuid}", headers=internal_api_headers)
 		GetPoints_data = GetPoints.json()
@@ -383,24 +392,24 @@ async def val_shop_checker():
 
 
 def main_gui(vp, rp, current_bundles, bundles_images, bundle_prices, skin_names, skin_images, singleweapons_prices, nm_offers, nm_price, nm_images):
+	print("Loaded Shop\nDisplaying!")
 	root = Tk()
 	root.title("Valorant Shop Checker")
-	root.configure(bg="#1e1e1e")  # Dark background
+	root.configure(bg="#121212")  # Improved dark background
 
 	# Styling with ttk themes
 	style = ttk.Style()
-	style.configure("TFrame", background="#1e1e1e")
-	style.configure("TLabelframe", background="#1e1e1e", foreground="white", borderwidth=0)
-	style.configure("TLabel", background="#1e1e1e", foreground="white", font=("Helvetica", 12, "bold"))
-	style.map("TLabelframe", relief=[("!active", "flat"), ("pressed", "ridge")])
+	style.configure("TFrame", background="#121212")
+	style.configure("TLabelframe", background="#121212", foreground="white", borderwidth=0)
+	style.configure("TLabel", background="#121212", foreground="white", font=("Helvetica", 12, "bold"))
 
 	# Title Section
-	title = tkLabel(root, text="Valorant Shop Checker", font=("Helvetica", 24, "bold"), fg="white", bg="#1e1e1e")
-	title.pack(pady=20)
+	title = tkLabel(root, text="Valorant Shop Checker", font=("Helvetica", 24, "bold"), fg="white", bg="#121212")
+	title.pack(pady=10)
 
 	# Points Section
 	points_frame = ttk.Frame(root)
-	points_frame.pack(pady=10)
+	points_frame.pack(pady=5)
 
 	vp_label = ttk.Label(points_frame, text=f"Valorant Points (VP): {vp}", font=("Helvetica", 14), style="TLabel")
 	vp_label.grid(row=0, column=0, padx=20)
@@ -408,23 +417,21 @@ def main_gui(vp, rp, current_bundles, bundles_images, bundle_prices, skin_names,
 	rp_label = ttk.Label(points_frame, text=f"Radianite Points (RP): {rp}", font=("Helvetica", 14), style="TLabel")
 	rp_label.grid(row=0, column=1, padx=20)
 
-	# Scrollable Frame Setup
-	def create_scrollable_frame(parent):
-		canvas = Canvas(parent, bg="#1e1e1e", highlightthickness=0)
-		scrollable_frame = Frame(canvas, bg="#1e1e1e")
-		scrollbar = Scrollbar(parent, orient="vertical", command=canvas.yview)
-		canvas.configure(yscrollcommand=scrollbar.set)
+	# Main Scrollable Canvas
+	main_canvas = Canvas(root, bg="#121212", highlightthickness=0)
+	main_canvas.pack(fill="both", expand=True, pady=10, padx=10)
 
-		scrollbar.pack(side="right", fill="y")
-		canvas.pack(side="left", fill="both", expand=True)
-		canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+	scrollbar = Scrollbar(root, orient="vertical", command=main_canvas.yview)
+	scrollbar.pack(side="right", fill="y")
+	main_canvas.configure(yscrollcommand=scrollbar.set)
 
-		scrollable_frame.bind(
-			"<Configure>",
-			lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-		)
+	content_frame = Frame(main_canvas, bg="#121212")
+	main_canvas.create_window((0, 0), window=content_frame, anchor="nw")
 
-		return scrollable_frame
+	def on_frame_configure(event):
+		main_canvas.configure(scrollregion=main_canvas.bbox("all"))
+
+	content_frame.bind("<Configure>", on_frame_configure)
 
 	# Helper function to resize images while keeping the aspect ratio
 	def resize_image(image, max_width, max_height):
@@ -434,91 +441,111 @@ def main_gui(vp, rp, current_bundles, bundles_images, bundle_prices, skin_names,
 		return image.resize(new_size, Image.Resampling.LANCZOS)
 
 	# Bundles Section
-	bundles_frame = ttk.LabelFrame(root, text="Bundles", style="TLabelframe")
+	bundles_frame = ttk.LabelFrame(content_frame, text="Bundles", style="TLabelframe")
 	bundles_frame.pack(fill="x", pady=10, padx=20)
 
-	bundles_scrollable = create_scrollable_frame(bundles_frame)
+	if current_bundles:
+		for i, bundle in enumerate(current_bundles):
+			bundle_frame = Frame(bundles_frame, bg="#2a2a2a", highlightbackground="#ffffff", highlightthickness=2)
+			bundle_frame.pack(side="left", padx=10, pady=10)
 
-	for i, bundle in enumerate(current_bundles):
-		bundle_image = Image.open(requests.get(bundles_images[i], stream=True).raw)
-		bundle_image = resize_image(bundle_image, 300, 150)
-		img = ImageTk.PhotoImage(bundle_image)
+			bundle_image = Image.open(requests.get(bundles_images[i], stream=True).raw)
+			bundle_image = resize_image(bundle_image, 200, 200)
+			img = ImageTk.PhotoImage(bundle_image)
 
-		img_label = tkLabel(bundles_scrollable, image=img, bg="#2a2a2a", bd=0, highlightthickness=0)
-		img_label.image = img
-		img_label.grid(row=i, column=0, pady=10, padx=10, sticky="ew")
-
-		bundle_label = tkLabel(
-			bundles_scrollable,
-			text=f"{bundle}\nPrice: {bundle_prices[i]} VP",
-			font=("Helvetica", 12, "bold"),
-			fg="white",
-			bg="#2a2a2a",
-			justify="center",
-		)
-		bundle_label.grid(row=i, column=1, pady=10, padx=10, sticky="ew")
-
-	# Daily Skins Section
-	skins_frame = ttk.LabelFrame(root, text="Daily Skins", style="TLabelframe")
-	skins_frame.pack(fill="x", pady=10, padx=20)
-
-	skins_scrollable = create_scrollable_frame(skins_frame)
-
-	for i, skin in enumerate(skin_names):
-		skin_image = Image.open(requests.get(skin_images[i], stream=True).raw)
-		skin_image = resize_image(skin_image, 120, 120)
-		img = ImageTk.PhotoImage(skin_image)
-
-		img_label = tkLabel(skins_scrollable, image=img, bg="#2a2a2a", bd=0, highlightthickness=0)
-		img_label.image = img
-		img_label.grid(row=i, column=0, pady=10, padx=10, sticky="ew")
-
-		skin_label = tkLabel(
-			skins_scrollable,
-			text=f"{skin}\nPrice: {singleweapons_prices[i]} VP",
-			font=("Helvetica", 10, "bold"),
-			fg="white",
-			bg="#2a2a2a",
-			justify="center",
-		)
-		skin_label.grid(row=i, column=1, pady=10, padx=10, sticky="ew")
-
-	# Night Market Section
-	night_market_frame = ttk.LabelFrame(root, text="Night Market", style="TLabelframe")
-	night_market_frame.pack(fill="x", pady=10, padx=20)
-
-	night_market_scrollable = create_scrollable_frame(night_market_frame)
-
-	if nm_offers:
-		for i, offer in enumerate(nm_offers):
-			nm_image = Image.open(requests.get(nm_images[i], stream=True).raw)
-			nm_image = resize_image(nm_image, 120, 120)
-			img = ImageTk.PhotoImage(nm_image)
-
-			img_label = tkLabel(night_market_scrollable, image=img, bg="#2a2a2a", bd=0, highlightthickness=0)
+			img_label = tkLabel(bundle_frame, image=img, bg="#2a2a2a", bd=0, highlightthickness=0)
 			img_label.image = img
-			img_label.grid(row=i, column=0, pady=10, padx=10, sticky="ew")
+			img_label.pack(pady=(10, 5))
 
-			offer_label = tkLabel(
-				night_market_scrollable,
-				text=f"{offer}\nPrice: {nm_price[i]} VP",
-				font=("Helvetica", 10, "bold"),
+			bundle_label = tkLabel(
+				bundle_frame,
+				text=bundle,
+				font=("Helvetica", 12, "bold"),
 				fg="white",
 				bg="#2a2a2a",
 				justify="center",
 			)
-			offer_label.grid(row=i, column=1, pady=10, padx=10, sticky="ew")
+			bundle_label.pack()
 
-	else:
-		empty_label = tkLabel(
-			night_market_scrollable,
-			text="Night Market is currently unavailable.",
+			price_label = tkLabel(
+				bundle_frame,
+				text=f"Price: {bundle_prices[i]} VP",
+				font=("Helvetica", 10, "bold"),
+				fg="white",
+				bg="#2a2a2a",
+			)
+			price_label.pack(pady=5)
+
+	# Daily Skins Section
+	skins_frame = ttk.LabelFrame(content_frame, text="Daily Skins", style="TLabelframe")
+	skins_frame.pack(fill="x", pady=10, padx=20)
+
+	for i, skin in enumerate(skin_names):
+		skin_frame = Frame(skins_frame, bg="#2a2a2a", highlightbackground="#ffffff", highlightthickness=2)
+		skin_frame.pack(side="left", padx=10, pady=10)
+
+		skin_image = Image.open(requests.get(skin_images[i], stream=True).raw)
+		skin_image = resize_image(skin_image, 200, 200)
+		img = ImageTk.PhotoImage(skin_image)
+
+		img_label = tkLabel(skin_frame, image=img, bg="#2a2a2a", bd=0, highlightthickness=0)
+		img_label.image = img
+		img_label.pack(pady=(10, 5))
+
+		skin_label = tkLabel(
+			skin_frame,
+			text=skin,
 			font=("Helvetica", 12, "bold"),
 			fg="white",
 			bg="#2a2a2a",
 			justify="center",
 		)
-		empty_label.pack()
+		skin_label.pack()
+
+		price_label = tkLabel(
+			skin_frame,
+			text=f"Price: {singleweapons_prices[i]} VP",
+			font=("Helvetica", 10, "bold"),
+			fg="white",
+			bg="#2a2a2a",
+		)
+		price_label.pack(pady=5)
+
+	# Night Market Section
+	night_market_frame = ttk.LabelFrame(content_frame, text="Night Market", style="TLabelframe")
+	night_market_frame.pack(fill="x", pady=10, padx=20)
+
+	if nm_offers:
+		for i, offer in enumerate(nm_offers):
+			nm_frame = Frame(night_market_frame, bg="#2a2a2a", highlightbackground="#ffffff", highlightthickness=2)
+			nm_frame.pack(side="left", padx=10, pady=10)
+
+			nm_image = Image.open(requests.get(nm_images[i], stream=True).raw)
+			nm_image = resize_image(nm_image, 200, 200)
+			img = ImageTk.PhotoImage(nm_image)
+
+			img_label = tkLabel(nm_frame, image=img, bg="#2a2a2a", bd=0, highlightthickness=0)
+			img_label.image = img
+			img_label.pack(pady=(10, 5))
+
+			offer_label = tkLabel(
+				nm_frame,
+				text=offer,
+				font=("Helvetica", 12, "bold"),
+				fg="white",
+				bg="#2a2a2a",
+				justify="center",
+			)
+			offer_label.pack()
+
+			price_label = tkLabel(
+				nm_frame,
+				text=f"Price: {nm_price[i]} VP",
+				font=("Helvetica", 10, "bold"),
+				fg="white",
+				bg="#2a2a2a",
+			)
+			price_label.pack(pady=5)
 
 	root.mainloop()
 
@@ -656,8 +683,8 @@ def get_rank_from_uuid(user_id: str, platform: str = "PC"):
 				# If no comp match are played by the user
 				return "Unranked"
 
-	with open("comp_data.json", "a") as f:
-		json.dump(r.json(), f, indent=4)
+	with open("comp_data.json", "a") as file:
+		dump(r.json(), file, indent=4)
 	if str(rank_tier) == "0":
 		rank = "Unranked"
 	else:
@@ -759,7 +786,7 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC"):
 					deaths += match["stats"]["deaths"]
 
 		with open("party_ids.json", "a") as file:
-			json.dump(partyIDs, file, indent=4)
+			dump(partyIDs, file, indent=4)
 
 		"""
 		# Check if any party members are in the same current game
@@ -856,7 +883,7 @@ def get_current_game_score(puuid: str) -> tuple[int, int]:
 	for user in all_user_data:
 		if user["puuid"] == puuid:
 			encoded_user_data: str = user["private"]
-	decoded_user_data = json.loads(b64decode(encoded_user_data))
+	decoded_user_data = loads(b64decode(encoded_user_data))
 	allyTeamScore = decoded_user_data["partyOwnerMatchScoreAllyTeam"]
 	enemyTeamScore = decoded_user_data["partyOwnerMatchScoreEnemyTeam"]
 	return allyTeamScore, enemyTeamScore
@@ -1064,13 +1091,13 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 					input("\nPress any key to continue")
 					"""
 					return None
-
+		except KeyboardInterrupt:
+			sys.exit(1)
 		except Exception as e:
 			await log_in()
 			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 			logger.log(1, traceback_str)
-			print("this")
-			print(e)
+			print("Error Logged!")
 
 
 def print_buffered(buffer):
@@ -1081,7 +1108,7 @@ def print_buffered(buffer):
 
 def add_parties(partys, new_parties):
 	with open("partys_thing.json", "a") as file:
-		json.dump(partys, file, indent=4)
+		dump(partys, file, indent=4)
 	for party_id, new_players in new_parties.items():
 		if party_id in partys:
 			# Add new players to the existing party, ensuring no duplicates
@@ -1120,7 +1147,7 @@ async def run_pregame(data: dict):
 			                  headers=internal_api_headers) as r:
 				match_data = r.json()
 				with open("pre_match_data.json", "w") as f:
-					json.dump(match_data, f, indent=4)
+					dump(match_data, f, indent=4)
 
 			if not got_map_and_gamemode:
 				map_name = get_mapdata_from_id(match_data["MapID"])
@@ -1205,13 +1232,12 @@ async def run_pregame(data: dict):
 				last_rendered_content = current_rendered_content
 
 			time.sleep(0.5)
-
+		except KeyboardInterrupt:
+			sys.exit(1)
 		except Exception as e:
 			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 			logger.log(1, traceback_str)
-			raise e
-			print("this 1")
-			print(e)
+			print("Error Logged!")
 
 	await run_in_game(cache, our_team_colour)
 	return
@@ -1320,6 +1346,7 @@ async def get_party():
 						player_rank_str = get_rank_color(get_rank_from_uuid(str(member['Subject'])))
 						got_rank[str(member["Subject"])] = player_rank_str
 					else:
+
 						player_rank_str = got_rank[str(member["Subject"])]
 					message_list.append(color_text(f"{leader_text}[LVL {player_lvl}] {player_name} {player_rank_str}\n", color))
 
@@ -1344,8 +1371,11 @@ async def get_party():
 					last_rendered_content = new_message
 					print_buffered(buffer)
 				await asyncio.sleep(3.5)
+		except KeyboardInterrupt:
+			sys.exit(1)
 		except Exception as e:
 			await log_in()
+			print("Error Logged!")
 			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 			logger.log(1, traceback_str)
 
@@ -1397,9 +1427,13 @@ def get_userdata_from_token() -> tuple[str, str]:
 			return "None", "None"
 
 
-async def main():
+async def main() -> None:
 	clear_console()
-	print(colorama.Fore.BLUE + "Welcome" + colorama.Style.RESET_ALL)
+
+	print(Fore.LIGHTCYAN_EX + BANNER + Style.RESET_ALL)
+
+	print(Fore.BLUE + "============\n|  Welcome" + Style.RESET_ALL)
+	print(Fore.CYAN + f"|  Version: {VERSION}\n============" + Style.RESET_ALL)
 
 	print("One moment while we sign you in...\n")
 
@@ -1423,6 +1457,10 @@ async def main():
 
 						# BETA party system
 						await get_party()
+			except KeyboardInterrupt:
+				return
+			except EOFError:
+				return
 			except Exception as e:
 				traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 				logger.log(1, traceback_str)
@@ -1436,5 +1474,7 @@ if __name__ == "__main__":
 	colorama.init(autoreset=True)
 	logger = Logger("Valorant Loader", "logs/ValorantLoader", ".log")
 	logger.load_public_key(pub_key)
-
-	asyncio.run(main())
+	try:
+		asyncio.run(main())
+	except KeyboardInterrupt:
+		sys.exit(1)
