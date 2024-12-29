@@ -1,4 +1,4 @@
-VERSION = "v2.0.6"
+VERSION = "v2.0.7"
 
 import asyncio
 import threading
@@ -440,17 +440,17 @@ def main_gui(vp, rp, current_bundles, bundles_images, bundle_prices, skin_names,
 		new_size = (int(original_width * ratio), int(original_height * ratio))
 		return image.resize(new_size, Image.Resampling.LANCZOS)
 
-	# Bundles Section
+	# Bundles Section as banners
 	bundles_frame = ttk.LabelFrame(content_frame, text="Bundles", style="TLabelframe")
 	bundles_frame.pack(fill="x", pady=10, padx=20)
 
 	if current_bundles:
 		for i, bundle in enumerate(current_bundles):
 			bundle_frame = Frame(bundles_frame, bg="#2a2a2a", highlightbackground="#ffffff", highlightthickness=2)
-			bundle_frame.pack(side="left", padx=10, pady=10)
+			bundle_frame.pack(side="top", fill="x", padx=10, pady=10)
 
 			bundle_image = Image.open(requests.get(bundles_images[i], stream=True).raw)
-			bundle_image = resize_image(bundle_image, 200, 200)
+			bundle_image = resize_image(bundle_image, 400, 150)  # Make the bundle image larger
 			img = ImageTk.PhotoImage(bundle_image)
 
 			img_label = tkLabel(bundle_frame, image=img, bg="#2a2a2a", bd=0, highlightthickness=0)
@@ -460,7 +460,7 @@ def main_gui(vp, rp, current_bundles, bundles_images, bundle_prices, skin_names,
 			bundle_label = tkLabel(
 				bundle_frame,
 				text=bundle,
-				font=("Helvetica", 12, "bold"),
+				font=("Helvetica", 16, "bold"),
 				fg="white",
 				bg="#2a2a2a",
 				justify="center",
@@ -470,7 +470,7 @@ def main_gui(vp, rp, current_bundles, bundles_images, bundle_prices, skin_names,
 			price_label = tkLabel(
 				bundle_frame,
 				text=f"Price: {bundle_prices[i]} VP",
-				font=("Helvetica", 10, "bold"),
+				font=("Helvetica", 14, "bold"),
 				fg="white",
 				bg="#2a2a2a",
 			)
@@ -547,6 +547,8 @@ def main_gui(vp, rp, current_bundles, bundles_images, bundle_prices, skin_names,
 			)
 			price_label.pack(pady=5)
 
+	root.update_idletasks()
+	root.geometry(f"{round(root.winfo_width() * 3.15)}x{round(root.winfo_height() * 2.25)}")
 	root.mainloop()
 
 
@@ -1285,6 +1287,11 @@ async def listen_for_input(party_id: str):
 			elif user_input == "q":
 				print("Exiting input listener...")
 				break
+			elif user_input.lower() in ["cls", "clear"]:
+				clear_console()
+			elif "party" in user_input.lower():
+				clear_console()
+				await get_party()
 		except Exception as e:
 			print(f"Error in input listener: {e}")
 			break
@@ -1374,7 +1381,9 @@ async def get_party():
 		except KeyboardInterrupt:
 			sys.exit(1)
 		except Exception as e:
-			await log_in()
+			logged_in = await log_in()
+			if not logged_in:
+				return
 			print("Error Logged!")
 			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 			logger.log(1, traceback_str)
@@ -1427,13 +1436,17 @@ def get_userdata_from_token() -> tuple[str, str]:
 			return "None", "None"
 
 
-async def main() -> None:
-	clear_console()
-
-	print(Fore.LIGHTCYAN_EX + BANNER + Style.RESET_ALL)
+def main_display():
+	print("\n" + Fore.LIGHTCYAN_EX + BANNER + Style.RESET_ALL)
 
 	print(Fore.BLUE + "============\n|  Welcome" + Style.RESET_ALL)
 	print(Fore.CYAN + f"|  Version: {VERSION}\n============" + Style.RESET_ALL)
+
+
+async def main() -> None:
+	clear_console()
+
+	main_display()
 
 	print("One moment while we sign you in...\n")
 
@@ -1443,6 +1456,8 @@ async def main() -> None:
 		logger.log(3, f"Logged in as: {name}#{tag}")
 		while True:
 			try:
+				clear_console()
+				main_display()
 				print(f"\nYou have been logged in! Welcome, {name.capitalize()}")
 
 				user_input = input("(1) Check shop, (2) In-game loader\n")
@@ -1452,11 +1467,16 @@ async def main() -> None:
 					await val_shop_checker()
 				elif user_input == "2":
 					while True:
-						# Check if user is selecting an agent / pregame
-						await check_if_user_in_pregame()
+						logged_in = await log_in()
+						if logged_in:
+							# Check if user is selecting an agent / pregame
+							await check_if_user_in_pregame()
 
-						# BETA party system
-						await get_party()
+							# BETA party system
+							await get_party()
+						else:
+							time.sleep(2.5)
+							clear_console()
 			except KeyboardInterrupt:
 				return
 			except EOFError:
