@@ -1,4 +1,4 @@
-VERSION = "v2.0.7"
+VERSION = "v2.1.0"
 
 import asyncio
 import threading
@@ -41,6 +41,8 @@ internal_api_headers_console = {}
 
 password = ""
 port = ""
+
+input_task = None
 
 config = configparser.ConfigParser()
 parentdir = os.path.dirname(__file__)
@@ -600,6 +602,37 @@ def update_damage_stats(damage_dict, main_player, damage_info):
 	return damage_dict
 
 
+def get_headshot_percent(match_data: dict) -> dict[str, float | int]:
+	all_players = match_data['players']
+	damage_stats = {}
+	players_headshot_percent = {}
+
+	for player in all_players:
+		player_uuid = player["subject"]
+
+		for round_stats in match_data["roundResults"]:
+			# Player by Player
+			for player_stat in round_stats["playerStats"]:
+				# Who did the damage
+				main_player = player_stat["subject"]
+				try:
+					# Info on that damage, damage by damage
+					for hit in player_stat["damage"]:
+						# Update damage stats
+						damage_stats = update_damage_stats(damage_stats, main_player, hit)
+				except KeyError:
+					# If no damage is done to any player from that player by round
+					pass
+		other_damage_stats = damage_stats.get(player_uuid, {"legshots": 0, "bodyshots": 0, "headshots": 0})
+		total_shots = other_damage_stats["legshots"] + other_damage_stats["bodyshots"] + other_damage_stats["headshots"]
+		if total_shots > 0:
+			headshot_percentage = (other_damage_stats["headshots"] / total_shots) * 100
+		else:
+			headshot_percentage = 0
+		players_headshot_percent[str(player_uuid)] = headshot_percentage
+	return players_headshot_percent
+
+
 def generate_match_report(match_stats: dict, host_player_uuid: str, only_host_player: bool = False):
 	all_players = match_stats['players']
 	report = []
@@ -743,6 +776,7 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC"):
 	wins = []
 	session = create_session()
 	partyIDs = {}
+	headshot = []
 
 	try:
 		if platform == "PC":
@@ -786,9 +820,9 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC"):
 					wins.append(Fore.GREEN + "■" if won else Fore.RED + "■")
 					kills += match["stats"]["kills"]
 					deaths += match["stats"]["deaths"]
+			headshot.append(round(get_headshot_percent(match_data)[str(user_id)]))
+		avg = sum(headshot) / len(headshot)
 
-		with open("party_ids.json", "a") as file:
-			dump(partyIDs, file, indent=4)
 
 		"""
 		# Check if any party members are in the same current game
@@ -803,7 +837,7 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC"):
 			json.dump(current_parties, file, indent=4)
 		"""
 		kd_ratio = calculate_kd(kills, deaths)
-		cache[user_id] = (kd_ratio, wins)
+		cache[user_id] = (kd_ratio, wins, avg)
 
 		return partyIDs, cache
 
@@ -877,18 +911,24 @@ def get_rank_color(rank: str):
 
 def get_current_game_score(puuid: str) -> tuple[int, int]:
 	requests.packages.urllib3.disable_warnings()
-	with requests.get(f"https://127.0.0.1:{port}/chat/v4/presences",
-	                  headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
-		data = r.json()
+	try:
 
-	all_user_data = data["presences"]
-	for user in all_user_data:
-		if user["puuid"] == puuid:
-			encoded_user_data: str = user["private"]
-	decoded_user_data = loads(b64decode(encoded_user_data))
-	allyTeamScore = decoded_user_data["partyOwnerMatchScoreAllyTeam"]
-	enemyTeamScore = decoded_user_data["partyOwnerMatchScoreEnemyTeam"]
-	return allyTeamScore, enemyTeamScore
+		with requests.get(f"https://127.0.0.1:{port}/chat/v4/presences",
+		                  headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
+			data = r.json()
+
+		all_user_data = data["presences"]
+		for user in all_user_data:
+			if user["puuid"] == puuid:
+				encoded_user_data: str = user["private"]
+				decoded_user_data = loads(b64decode(encoded_user_data))
+				allyTeamScore = decoded_user_data["partyOwnerMatchScoreAllyTeam"]
+				enemyTeamScore = decoded_user_data["partyOwnerMatchScoreEnemyTeam"]
+				return allyTeamScore, enemyTeamScore
+	except Exception as e:
+		traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+		logger.log(1, traceback_str)
+	return -1, -1
 
 
 def get_party_symbol(number: int):
@@ -911,7 +951,7 @@ def get_party_symbol(number: int):
 	return coloured_party_symbol
 
 
-async def run_in_game(cache=None, our_team_colour: str = None):
+async def run_in_game(cache: dict = None, partys: dict = None):
 	if cache is None:
 		cache = {}
 
@@ -937,8 +977,8 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 	player_name_cache = []
 	team_blue_player_list = {}
 	team_red_player_list = {}
-
-	partys = {}
+	if partys is None:
+		partys = {}
 
 	def fetch_player_data(player_id, platform):
 		nonlocal partys, cache
@@ -994,14 +1034,14 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 							elif team_id.lower() == "red":
 								team_red_player_list[host_player] = (agent_name, player_lvl, rank, player_id)
 
-							player_data[host_player] = cache.get(str(player_id), ("Loading", "Loading"))
+							player_data[host_player] = cache.get(str(player_id), ("Loading", "Loading", "Loading"))
 
 					count = 0
 					party_exists = []
 					party_number = 1
 					for player in match_data["Players"]:
 						player_id = player["PlayerIdentity"]["Subject"]
-						player_data[str(player_name_cache[count])] = cache.get(str(player_id), ("Loading", "Loading"))
+						player_data[str(player_name_cache[count])] = cache.get(str(player_id), ("Loading", "Loading", "Loading"))
 						count += 1
 
 					# Ensure the rank color is applied correctly
@@ -1023,8 +1063,8 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 										party_number += 1
 										break
 						buffer.write(Fore.BLUE + f"{party_symbol}{color_text(f'[LVL {data[1]}]', Fore.BLUE)} {get_rank_color(data[2])} {user_name} ({data[0]})\n" + Style.RESET_ALL)
-						kd, wins = player_data.get(user_name, ("Loading", "Loading"))
-						buffer.write(Fore.MAGENTA + f"Player KD: {kd} | Past Matches: {''.join(wins)}\n\n" + Style.RESET_ALL)
+						kd, wins, hs = player_data.get(user_name, ("Loading", "Loading", "Loading"))
+						buffer.write(Fore.MAGENTA + f"Player KD: {kd} | Headshot: {hs}%\nPast Matches: {''.join(wins)}\n\n" + Style.RESET_ALL)
 
 					buffer.write(Fore.RED + "VS\n\nTeam Red:\n" + Style.RESET_ALL)
 					for user_name, data in team_red_player_list.items():
@@ -1043,8 +1083,8 @@ async def run_in_game(cache=None, our_team_colour: str = None):
 										party_number += 1
 										break
 						buffer.write(Fore.RED + f"{party_symbol}{color_text(f'[LVL {data[1]}]', Fore.RED)} {get_rank_color(data[2])} {user_name} ({data[0]})\n" + Style.RESET_ALL)
-						kd, wins = player_data.get(user_name, ("Loading", "Loading"))
-						buffer.write(Fore.MAGENTA + f"Player KD: {kd} | Past Matches: {''.join(wins)}\n\n" + Style.RESET_ALL)
+						kd, wins, hs = player_data.get(user_name, ("Loading", "Loading", "Loading"))
+						buffer.write(Fore.MAGENTA + f"Player KD: {kd} | Headshot: {hs}%\nPast Matches: {''.join(wins)}\n\n" + Style.RESET_ALL)
 
 					score = get_current_game_score(val_uuid)
 					buffer.write(f"{score[0]} | {score[1]}\n")
@@ -1215,8 +1255,8 @@ async def run_pregame(data: dict):
 				else:
 					buffer.write(f"{party_symbol}{color_text(f'[LVL {player_level}]', Fore.GREEN)} {get_rank_color(rank)} {user_name}: {agent_name} (Locked)\n")
 
-				kd, wins = cache.get(str(ally_player["PlayerIdentity"]["Subject"]), ("Loading", "Loading"))
-				buffer.write(color_text(f"Player KD: {kd} | Past Matches: {''.join(wins)}\n\n", Fore.MAGENTA))
+				kd, wins, avg = cache.get(str(ally_player["PlayerIdentity"]["Subject"]), ("Loading", "Loading", "Loading"))
+				buffer.write(color_text(f"Player KD: {kd} | Headshot: {avg}%\nPast Matches: {''.join(wins)}\n\n", Fore.MAGENTA))
 
 			got_rank = True
 			buffer.write(color_text(f"Enemy team: {match_data['EnemyTeamLockCount']}/5 LOCKED\n", Fore.RED))
@@ -1241,7 +1281,7 @@ async def run_pregame(data: dict):
 			logger.log(1, traceback_str)
 			print("Error Logged!")
 
-	await run_in_game(cache, our_team_colour)
+	await run_in_game(cache, partys)
 	return
 
 
@@ -1291,6 +1331,7 @@ async def listen_for_input(party_id: str):
 				clear_console()
 			elif "party" in user_input.lower():
 				clear_console()
+				print("Loading Party...")
 				await get_party()
 		except Exception as e:
 			print(f"Error in input listener: {e}")
@@ -1298,6 +1339,7 @@ async def listen_for_input(party_id: str):
 
 
 async def get_party():
+	global input_task
 	cancel = False
 	buffer = StringIO()
 	last_rendered_content = ""
@@ -1349,11 +1391,11 @@ async def get_party():
 
 					color = Fore.YELLOW if is_user else (Fore.LIGHTRED_EX if is_leader else Fore.WHITE)
 					leader_text = "[Leader] " if is_leader else ""
-					if str(member["Subject"]) not in got_rank.keys():
+					if member["Subject"] not in got_rank:
+						print("Not Cached")
 						player_rank_str = get_rank_color(get_rank_from_uuid(str(member['Subject'])))
 						got_rank[str(member["Subject"])] = player_rank_str
 					else:
-
 						player_rank_str = got_rank[str(member["Subject"])]
 					message_list.append(color_text(f"{leader_text}[LVL {player_lvl}] {player_name} {player_rank_str}\n", color))
 
