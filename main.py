@@ -1,4 +1,4 @@
-VERSION = "v2.1.6"
+VERSION = "v2.2.0"
 
 import asyncio
 import threading
@@ -29,6 +29,10 @@ from tkinter import Tk, ttk, Canvas, Frame, Scrollbar
 from tkinter import Label as tkLabel
 from PIL import Image, ImageTk
 from datetime import datetime, timedelta
+
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
 
 val_token = ""
 val_access_token = ""
@@ -83,12 +87,12 @@ pub_key = ("-----BEGIN PUBLIC KEY-----\n"
            "-----END PUBLIC KEY-----")
 
 BANNER = """
-██╗   ██╗ █████╗ ██╗      ██████╗ ██████╗  █████╗ ███╗   ██╗████████╗    ██╗      ██████╗  █████╗ ██████╗ ███████╗██████╗ 
-██║   ██║██╔══██╗██║     ██╔═══██╗██╔══██╗██╔══██╗████╗  ██║╚══██╔══╝    ██║     ██╔═══██╗██╔══██╗██╔══██╗██╔════╝██╔══██╗
-██║   ██║███████║██║     ██║   ██║██████╔╝███████║██╔██╗ ██║   ██║       ██║     ██║   ██║███████║██║  ██║█████╗  ██████╔╝
-╚██╗ ██╔╝██╔══██║██║     ██║   ██║██╔══██╗██╔══██║██║╚██╗██║   ██║       ██║     ██║   ██║██╔══██║██║  ██║██╔══╝  ██╔══██╗
- ╚████╔╝ ██║  ██║███████╗╚██████╔╝██║  ██║██║  ██║██║ ╚████║   ██║       ███████╗╚██████╔╝██║  ██║██████╔╝███████╗██║  ██║
-  ╚═══╝  ╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝       ╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═╝ 
+██╗   ██╗ █████╗ ██╗      ██████╗ ██████╗  █████╗ ███╗   ██╗████████╗    ███████╗ ██████╗ ██████╗  ██████╗ 
+██║   ██║██╔══██╗██║     ██╔═══██╗██╔══██╗██╔══██╗████╗  ██║╚══██╔══╝    ╚══███╔╝██╔═══██╗██╔══██╗██╔═══██╗
+██║   ██║███████║██║     ██║   ██║██████╔╝███████║██╔██╗ ██║   ██║         ███╔╝ ██║   ██║██████╔╝██║   ██║
+╚██╗ ██╔╝██╔══██║██║     ██║   ██║██╔══██╗██╔══██║██║╚██╗██║   ██║        ███╔╝  ██║   ██║██╔══██╗██║   ██║
+ ╚████╔╝ ██║  ██║███████╗╚██████╔╝██║  ██║██║  ██║██║ ╚████║   ██║       ███████╗╚██████╔╝██║  ██║╚██████╔╝
+  ╚═══╝  ╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝       ╚══════╝ ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ 
 """
 
 
@@ -942,9 +946,10 @@ def get_rank_color(rank: str):
 	return f"\033[90m[{rank}]{RESET}"  # No color, default text
 
 
-def get_user_current_state(puuid: str, presences_data: dict = None) -> int:
+def get_user_current_state(puuid: str, presences_data: dict = None) -> int | tuple[int, str]:
 	"""
 	:return: int: 1 = In Menus, 2 = In Menus Queueing, 3 = Pregame, 4 = In-Game, 5 = Other State, -1 = Error
+	if `return_match_id_also`, will return tuple with index 0 being int and 1 being the match_id
 	"""
 	requests.packages.urllib3.disable_warnings()  # noqa
 	try:
@@ -1271,9 +1276,10 @@ async def run_pregame(data: dict):
 				gamemode_name = match_data["QueueID"]
 				got_map_and_gamemode = True
 
-			# Ensure color resets after each section
+			buffer.write(color_text("=" * 30 + "\n", Fore.LIGHTWHITE_EX))
 			buffer.write(color_text(f"Map: {map_name}\n", Fore.GREEN))
-			buffer.write(color_text(f"Game mode: {str(gamemode_name).capitalize()}\n\n", Fore.CYAN))
+			buffer.write(color_text(f"Game Mode: {str(gamemode_name).capitalize()}\n", Fore.CYAN))
+			buffer.write(color_text("=" * 30 + "\n\n", Fore.LIGHTWHITE_EX))
 
 			our_team_colour = match_data["AllyTeam"]["TeamID"]
 
@@ -1323,15 +1329,25 @@ async def run_pregame(data: dict):
 								party_number += 1
 								break
 
-				if state == "":
-					buffer.write(f"{party_symbol}{color_text(f'[LVL {player_level}]', Fore.YELLOW)} {get_rank_color(rank)} {user_name}: {agent_name} (Picking)\n")
-				elif state == "selected":
-					buffer.write(f"{party_symbol}{color_text(f'[LVL {player_level}]', Fore.BLUE)} {get_rank_color(rank)} {user_name}: {agent_name} (Hovering)\n")
-				else:
-					buffer.write(f"{party_symbol}{color_text(f'[LVL {player_level}]', Fore.GREEN)} {get_rank_color(rank)} {user_name}: {agent_name} (Locked)\n")
+				state_display = {
+					"": "(Picking)",
+					"selected": "(Hovering)",
+					"locked": "(Locked)"
+				}.get(state, "(Unknown)")
+
+				state_color = {
+					"": Fore.YELLOW,
+					"selected": Fore.BLUE,
+					"locked": Fore.GREEN
+				}.get(state, Fore.RED)
+
+				buffer.write(
+					f"{party_symbol}{color_text(f'[LVL {player_level}]', state_color)} {get_rank_color(rank)} {user_name}: {agent_name} {state_display}\n"
+				)
 
 				kd, wins, avg = cache.get(str(ally_player["PlayerIdentity"]["Subject"]), ("Loading", "Loading", "Loading"))
-				buffer.write(color_text(f"Player KD: {kd} | Headshot: {avg}%\nPast Matches: {''.join(wins)}\n\n", Fore.MAGENTA))
+				buffer.write(color_text(f"  Player KD: {kd} | Headshot: {avg}%\n", Fore.MAGENTA))
+				buffer.write(color_text(f"  Past Matches: {''.join(wins)}\n\n", Fore.LIGHTMAGENTA_EX))
 
 			got_rank = True
 			buffer.write(color_text(f"Enemy team: {match_data['EnemyTeamLockCount']}/{match_data['EnemyTeamSize']} LOCKED\n", Fore.RED))
@@ -1357,7 +1373,6 @@ async def run_pregame(data: dict):
 			print("Error Logged!")
 
 	await run_in_game(cache, partys)
-	return
 
 
 def clear_console():
@@ -1387,6 +1402,20 @@ async def toggle_ready_state(party_id: str, is_ready: bool):
 		return False
 
 
+def quit_game():
+	player_state = get_user_current_state(val_uuid)
+	if player_state == 3:
+		with requests.get(f"https://glz-na-1.na.a.pvp.net/pregame/v1/players/{val_uuid}", headers=internal_api_headers) as r:
+			if r.status_code == 200:
+				match_id = r.json()["MatchID"]
+				requests.post(f"https://glz-na-1.na.a.pvp.net/pregame/v1/matches/{match_id}/quit", headers=internal_api_headers)
+	elif player_state == 4:
+		with requests.get(f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}", headers=internal_api_headers) as r:
+			if r.status_code == 200:
+				match_id = r.json()["MatchID"]
+				requests.post(f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}/disassociate/{match_id}", headers=internal_api_headers)
+
+
 async def listen_for_input(party_id: str):
 	is_ready = True  # Start with the default ready state
 	print("Press 'r' to toggle ready state or 'q' to quit.")
@@ -1408,12 +1437,17 @@ async def listen_for_input(party_id: str):
 				clear_console()
 				print("Loading Party...")
 				await get_party()
+			elif "leave" in user_input.lower():
+				print("Leaving")
+				quit_game()
+
 		except Exception as e:
 			print(f"Error in input listener: {e}")
 			break
 
 
-async def get_friend_states():
+async def get_friend_states() -> list[str]:
+	requests.packages.urllib3.disable_warnings()  # noqa
 	with requests.get(f"https://127.0.0.1:{port}/chat/v4/presences",
 	                  headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
 		data = r.json()
@@ -1425,15 +1459,17 @@ async def get_friend_states():
 			state_str = "In Menu" if state == 1 else "Queueing" if state == 2 else "Pre-game" if state == 3 else "In-game"
 			full_str = f"{user['game_name']}#{user['game_tag']}: {state_str}"
 			friend_list.append(full_str)
+	return friend_list
 
 
 async def get_party(got_rank: dict = None):
+	"""Fetch and display party details in Valorant."""
 	global input_task
 	buffer = StringIO()
 	last_rendered_content = ""
 	input_task = None  # Task for input handling
-	if got_rank is None:
-		got_rank = {}
+	got_rank = got_rank or {}
+
 	while True:
 		await check_if_user_in_pregame()
 		try:
@@ -1441,55 +1477,17 @@ async def get_party(got_rank: dict = None):
 			buffer.seek(0)
 
 			message_list = [color_text("----- Party -----\n", Fore.CYAN)]
-			with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(val_uuid)}", headers=internal_api_headers) as r:
-				if r.status_code == 400:
-					is_console = str(r.json()["errorCode"]) == "PLAYER_PLATFORM_TYPE_MISMATCH"
-					if is_console:
-						with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(val_uuid)}", headers=internal_api_headers_console) as r2:
-							party_id = r2.json()['CurrentPartyID']
-					else:
-						buffer.write(color_text("Error fetching party details.\n", Fore.RED))
-						party_id = r.json()['CurrentPartyID']
-				elif r.status_code == 404:
-					party_id = None
-				else:
-					party_id = r.json()['CurrentPartyID']
+			party_id = await fetch_party_id()
 
-			if party_id is not None:
+			if party_id:
 				if input_task is None or input_task.done():
 					input_task = asyncio.create_task(listen_for_input(party_id))
 
-				with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/parties/{party_id}", headers=internal_api_headers) as r:
-					party_data = r.json()
+				party_data = await fetch_party_data(party_id)
+				message_list.extend(parse_party_data(party_data, got_rank))
 
-				is_queueing = party_data["State"]
-				if is_queueing == "MATCHMAKING":
-					message_list.append(color_text("Queueing!\n", Fore.YELLOW))
-					last_rendered_content = ""
-					cancel = True
-					await check_if_user_in_pregame()
-
-				# is_console = str(party_data["Members"][0]["PlatformType"]).lower() == "console"
-				game_mode = str(party_data["MatchmakingData"]["QueueID"]).capitalize()
-				message_list.append(color_text(f"Mode: {game_mode}\n\n", Fore.GREEN))
-
-				for member in party_data["Members"]:
-					player_name, is_user = get_userdata_from_id(str(member["Subject"]), val_uuid)
-					is_leader = bool(member.get("IsOwner", False))
-					player_lvl = str(member["PlayerIdentity"]["AccountLevel"])
-
-					color = Fore.YELLOW if is_user else (Fore.LIGHTRED_EX if is_leader else Fore.WHITE)
-					leader_text = "[Leader] " if is_leader else ""
-					if member["Subject"] not in got_rank:
-						print("Not Cached")
-						player_rank_str = get_rank_color(get_rank_from_uuid(str(member['Subject'])))
-						got_rank[str(member["Subject"])] = player_rank_str
-					else:
-						player_rank_str = got_rank[str(member["Subject"])]
-					message_list.append(color_text(f"{leader_text}[LVL {player_lvl}] {player_name} {player_rank_str}\n", color))
-
+				# Render only if there's a change in content
 				current_rendered_content = ''.join(message_list)
-
 				if current_rendered_content != last_rendered_content:
 					buffer.write(current_rendered_content)
 					last_rendered_content = current_rendered_content
@@ -1497,28 +1495,82 @@ async def get_party(got_rank: dict = None):
 					print_buffered(buffer)
 
 				await asyncio.sleep(0.25)
-				"""
-				if cancel:
-					last_rendered_content = ""
-					await check_if_user_in_pregame()
-					break
-				"""
 			else:
-				new_message = color_text("Valorant is not running for that user!\n", Fore.RED)
-				if new_message != last_rendered_content:
-					buffer.write(new_message)
-					last_rendered_content = new_message
-					print_buffered(buffer)
+				render_no_party_message(buffer, last_rendered_content)
 				await asyncio.sleep(3.5)
 		except KeyboardInterrupt:
 			sys.exit(1)
 		except Exception as e:
-			logged_in = await log_in()
-			if not logged_in:
-				return
-			print("Error Logged!")
-			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-			logger.log(1, traceback_str)
+			await handle_exception(e)
+
+
+async def fetch_party_id():
+	"""Fetch the party ID for the current user."""
+	with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(val_uuid)}", headers=internal_api_headers) as r:
+		if r.status_code == 400:
+			is_console = str(r.json().get("errorCode")) == "PLAYER_PLATFORM_TYPE_MISMATCH"
+			if is_console:
+				with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(val_uuid)}", headers=internal_api_headers_console) as r2:
+					return r2.json().get('CurrentPartyID')
+			else:
+				logger.log(1, "Error fetching party details.")
+				return None
+		elif r.status_code == 404:
+			return None
+		else:
+			return r.json().get('CurrentPartyID')
+
+
+async def fetch_party_data(party_id):
+	"""Fetch the details of a party using its ID."""
+	with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/parties/{party_id}", headers=internal_api_headers) as r:
+		return r.json()
+
+
+def parse_party_data(party_data, got_rank):
+	"""Parse party data and prepare messages for rendering."""
+	messages = []
+	is_queueing = party_data.get("State")
+	if is_queueing == "MATCHMAKING":
+		messages.append(color_text("Queueing!\n", Fore.YELLOW))
+
+	game_mode = party_data.get("MatchmakingData", {}).get("QueueID", "Unknown").capitalize()
+	messages.append(color_text(f"Mode: {game_mode}\n\n", Fore.GREEN))
+
+	for member in party_data.get("Members", []):
+		player_name, is_user = get_userdata_from_id(str(member["Subject"]), val_uuid)
+		is_leader = member.get("IsOwner", False)
+		player_lvl = member["PlayerIdentity"].get("AccountLevel", "0")
+
+		color = Fore.YELLOW if is_user else (Fore.LIGHTRED_EX if is_leader else Fore.WHITE)
+		leader_text = "[Leader] " if is_leader else ""
+
+		if member["Subject"] not in got_rank:
+			player_rank_str = get_rank_color(get_rank_from_uuid(str(member['Subject'])))
+			got_rank[str(member["Subject"])] = player_rank_str
+		else:
+			player_rank_str = got_rank[str(member["Subject"])]
+
+		messages.append(color_text(f"{leader_text}[LVL {player_lvl}] {player_name} {player_rank_str}\n", color))
+	return messages
+
+
+def render_no_party_message(buffer, last_rendered_content):
+	"""Render a message when no party is found."""
+	new_message = color_text("Valorant is not running for that user!\n", Fore.RED)
+	if new_message != last_rendered_content:
+		buffer.write(new_message)
+		print_buffered(buffer)
+
+
+async def handle_exception(exception):
+	"""Handle exceptions by logging and retrying login."""
+	traceback_str = "".join(traceback.format_exception(type(exception), exception, exception.__traceback__))
+	logger.log(1, traceback_str)
+	print(color_text(f"An Error Has Happened!\n{traceback_str}", Fore.RED))
+	logged_in = await log_in()
+	if not logged_in:
+		sys.exit(1)
 
 
 async def check_if_user_in_pregame(send_message: bool = False):
@@ -1530,6 +1582,7 @@ async def check_if_user_in_pregame(send_message: bool = False):
 	                  headers=internal_api_headers) as r:
 		data = r.json()
 	try:
+		# FIXME | Bad way of checking for pregame
 		if data["errorCode"] == "RESOURCE_NOT_FOUND":
 			pass
 	except KeyError:
@@ -1569,18 +1622,44 @@ def get_userdata_from_token() -> tuple[str, str]:
 
 
 def main_display():
-	print("\n" + Fore.LIGHTCYAN_EX + BANNER + Style.RESET_ALL)
+	"""Display the main banner and version information."""
+	banner = Panel(
+		f"[cyan bold]{BANNER}[/cyan bold]",
+		title="Welcome",
+		title_align="left",
+		border_style="blue",
+	)
+	console.print(banner)
 
-	print(Fore.BLUE + "============\n|  Welcome" + Style.RESET_ALL)
-	print(Fore.CYAN + f"|  Version: {VERSION}\n============" + Style.RESET_ALL)
+	version_info = f"[bold cyan]Version:[/bold cyan] [green]{VERSION}[/green]"
+	console.print(version_info)
+
+
+async def display_logged_in_status(name: str) -> None:
+	"""Display the logged-in status with a welcome message."""
+	console.clear()
+	main_display()
+	console.print(f"\n[bold green]You have been logged in! Welcome, {name.capitalize()}[/bold green]")
+
+
+async def display_friend_states(friend_states: list) -> None:
+	"""Display the friend states in a formatted table."""
+	if not friend_states:
+		console.print("[bold red]No friends online.[/bold red]")
+	else:
+		table = Table(title="Friend States", show_header=True, header_style="bold magenta")
+		table.add_column("Friend", style="cyan")
+		table.add_column("Status", style="green")
+		for friend_state in friend_states:
+			friend_name, status = friend_state.split(":")  # Example format
+			table.add_row(friend_name, status)
+		console.print(table)
 
 
 async def main() -> None:
 	clear_console()
-
 	main_display()
-
-	print("One moment while we sign you in...\n")
+	console.print("[yellow]One moment while we sign you in...[/yellow]\n")
 
 	logged_in = await log_in()
 	if logged_in:
@@ -1588,44 +1667,52 @@ async def main() -> None:
 		logger.log(3, f"Logged in as: {name}#{tag}")
 		while True:
 			try:
-				clear_console()
-				main_display()
-				print(f"\nYou have been logged in! Welcome, {name.capitalize()}")
+				await display_logged_in_status(name)
 
-				user_input = input("(1) Check shop, (2) In-game loader\n")
-				clear_console()
+				# Fetch and display friend states dynamically
+				friend_states = await get_friend_states()
+				await display_friend_states(friend_states)
+
+				console.print("\n(1) Valorant Shop, (2) In-Game Loader\n")
+				user_input = input().strip()
 				if user_input == "1":
-					# Get valorant shop
 					await val_shop_checker()
 				elif user_input == "2":
 					while True:
 						logged_in = await log_in()
 						if logged_in:
-							# Check if user is selecting an agent / pregame
 							await check_if_user_in_pregame()
-
-							# BETA party system
 							await get_party()
 						else:
 							time.sleep(2.5)
-							clear_console()
+							console.clear()
+				else:
+					console.print("[bold red]Invalid input. Please try again.[/bold red]")
+					time.sleep(1.5)
 			except KeyboardInterrupt:
+				console.print("[bold yellow]Exiting...[/bold yellow]")
 				return
 			except EOFError:
+				console.print("[bold yellow]Exiting...[/bold yellow]")
 				return
 			except Exception as e:
 				traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 				logger.log(1, traceback_str)
-				print(f"An Error Has Happened!\n{traceback_str}")
+				console.print(f"[bold red]An Error Has Happened![/bold red]\n{traceback_str}")
+				time.sleep(2)
 	else:
+		console.print("[bold red]Failed to log in. Retrying in 5 seconds...[/bold red]")
 		time.sleep(5)
 
 
 if __name__ == "__main__":
 	clear_console()
 	colorama.init(autoreset=True)
-	logger = Logger("Valorant Loader", "logs/ValorantLoader", ".log")
+	logger = Logger("Valorant Zoro", "logs/ValorantZoro", ".log")
 	logger.load_public_key(pub_key)
+
+	console = Console()
+
 	try:
 		asyncio.run(main())
 	except KeyboardInterrupt:
