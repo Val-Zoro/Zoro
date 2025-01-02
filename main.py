@@ -1,4 +1,4 @@
-VERSION = "v2.1.0"
+VERSION = "v2.1.5"
 
 import asyncio
 import threading
@@ -23,7 +23,7 @@ from base64 import b64encode, b64decode
 from io import StringIO
 from colorama import Fore, Style
 from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry  # noqa
+from requests.packages.urllib3.util.retry import Retry  # noqa | Ignore, should work fine
 from pathlib import Path
 from tkinter import Tk, ttk, Canvas, Frame, Scrollbar
 from tkinter import Label as tkLabel
@@ -44,12 +44,33 @@ port = ""
 
 input_task = None
 
+CONFIG_FILE = "config.ini"
+if not os.path.exists("config.ini"):
+	raw_config_data = (f'[Main]\n'
+	                   f'; Amount of matches to look at before using that data for player stats\n'
+	                   f'; Wins / Loss | KD, HS%, ETC\n'
+	                   f'; Default = 10\n'
+	                   f'\n'
+	                   f'amount_of_matches_for_player_stats = 10\n'
+	                   f'; What game mode should these stats be taken from\n'
+	                   f'; "ALL", "SAME", Specific -> "competitive", "unrated"\n'
+	                   f'; Default = "ALL"\n'
+	                   f'stats_used_game_mode = ALL')
+	with open(CONFIG_FILE, "w") as file:
+		file.write(raw_config_data)
+
 config = configparser.ConfigParser()
 parentdir = os.path.dirname(__file__)
-config.read("/".join([parentdir, "config.ini"]))
+
+config.read("/".join([parentdir, CONFIG_FILE]))
+config_main = config["Main"]
 
 OUTPUT_PATH = Path(__file__).parent
 ASSETS_PATH = OUTPUT_PATH / Path("./assets")
+
+DATA_PATH = "data"
+if not os.path.exists(DATA_PATH):
+	os.mkdir(DATA_PATH)
 
 pub_key = ("-----BEGIN PUBLIC KEY-----\n"
            "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqIKYJWIl6Wif397yi3P+\n"
@@ -77,9 +98,12 @@ class Logger:
 		self.file_name = file_name
 		self.file_ending = file_ending
 
-		self.VERSION = "v1.5.2"
+		self.VERSION = "v1.6.0"
 
-		self.LEVELS = {1: "Error", 2: "Warning", 3: "Info", 4: "Debug"}
+		self.LEVELS = {1: f"{Fore.RED}Error{Fore.RESET}",
+		               2: f"{Fore.YELLOW}Warning{Fore.RESET}",
+		               3: f"{Fore.BLUE}Info{Fore.RESET}",
+		               4: f"{Fore.LIGHTWHITE_EX}Debug{Fore.RESET}"}
 		self.MAX_FILE_SIZE = 1 * 1024 * 1024  # 1MB
 		self.LOG_TIME_INTERVAL = timedelta(days=1)  # 1 day
 
@@ -105,23 +129,27 @@ class Logger:
 
 		return encrypted_message
 
-	def _timestamp(self):
+	@staticmethod
+	def _timestamp():
 		return datetime.now()
 
 	def _format_message(self, level: int, message: str) -> str:
 		level_name = self.LEVELS.get(level, "Unknown")
 		timestamp_str = self._timestamp().strftime("%Y-%m-%d %H:%M:%S")
-		return f"{timestamp_str} - {level_name}: {message}"
+		return f"{Fore.CYAN}{timestamp_str}{Style.RESET_ALL} - {level_name}: {message}"
 
-	def _get_log_filename(self) -> str:
+	def _get_log_filename(self, hit_mix_size: bool = False) -> str:
 		now = self._timestamp()
-		return f"{self.file_name}_{now.strftime('%Y-%m-%d')}{self.file_ending}"
+		if not hit_mix_size:
+			return f"{self.file_name}_{now.strftime('%Y-%m-%d')}{self.file_ending}"
+		else:
+			return f"{self.file_name}_{now.strftime('%Y-%m-%d-%H%M%S')}{self.file_ending}"
 
 	def _is_file_large(self, full_log_file_name: str) -> bool:
 		return os.path.exists(full_log_file_name) and os.path.getsize(full_log_file_name) >= self.MAX_FILE_SIZE
 
 	def _log_file_header(self):
-		return (f"\n"
+		return (f"\n{Fore.LIGHTWHITE_EX}"
 		        f"============================================================\n"
 		        f"Application Name:    {self.app_name}\n"
 		        f"Version:             {self.VERSION}\n"
@@ -134,7 +162,7 @@ class Logger:
 		        f"------------------------------------------------------------\n"
 		        f"Log Format:          [Timestamp] [Log Level] [Message]\n\n"
 		        f"============================================================\n\n"
-		        f"Log Start:\n")
+		        f"Log Start:{Fore.RESET}\n")
 
 	def load_public_key(self, key: str):
 		self.key = RSA.import_key(key)
@@ -317,7 +345,7 @@ async def val_shop_checker():
 		                         headers=internal_api_headers, json={})
 		data = response.json()
 
-		with open("data.json", "w") as file:
+		with open(f"{DATA_PATH}/data.json", "w") as file:
 			dump(data, file, indent=4)
 
 		GetPoints = requests.get(f"https://pd.na.a.pvp.net/store/v1/wallet/{val_uuid}", headers=internal_api_headers)
@@ -577,7 +605,7 @@ def get_userdata_from_id(user_id: str, host_player_uuid: str | None = None) -> t
 	return host_player, False
 
 
-def get_agentdata_from_id(agent_id: str) -> str:
+def get_agent_data_from_id(agent_id: str) -> str:
 	with requests.get(f"https://valorant-api.com/v1/agents/{agent_id}") as val_api:
 		agent_name = val_api.json()["data"]["displayName"]
 	return agent_name
@@ -640,7 +668,7 @@ def generate_match_report(match_stats: dict, host_player_uuid: str, only_host_pl
 
 	for player in all_players:
 		user_name = get_userdata_from_id(player['subject'])[0]
-		agent_name = get_agentdata_from_id(player['characterId'])
+		agent_name = get_agent_data_from_id(player['characterId'])
 		stats = player['stats']
 
 		if player['subject'] == host_player_uuid:
@@ -718,7 +746,7 @@ def get_rank_from_uuid(user_id: str, platform: str = "PC"):
 				# If no comp match are played by the user
 				return "Unranked"
 
-	with open("comp_data.json", "a") as file:
+	with open(f"{DATA_PATH}/comp_data.json", "a") as file:
 		dump(r.json(), file, indent=4)
 	if str(rank_tier) == "0":
 		rank = "Unranked"
@@ -770,32 +798,42 @@ def create_session():
 	return session
 
 
-def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC"):
+def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC", gamemode: str = None):
 	kills = 0
 	deaths = 0
 	wins = []
-	session = create_session()
 	partyIDs = {}
 	headshot = []
+	search = ""
 
 	try:
+		stats_used_game_mode = config_main.get("stats_used_game_mode", "ALL").lower()
+		if stats_used_game_mode != "all":
+			if stats_used_game_mode == "same":
+				if gamemode is not None:
+					search = f"&queue={gamemode}"
+			else:
+				search = f"&queue={stats_used_game_mode}"
+
 		if platform == "PC":
-			url = f"https://pd.na.a.pvp.net/match-history/v1/history/{user_id}"
+			url = f"https://pd.na.a.pvp.net/match-history/v1/history/{user_id}?endIndex={int(config_main.get('amount_of_matches_for_player_stats', '10'))}{search}"
 			headers = internal_api_headers
 		else:
-			url = f"https://pd.na.a.pvp.net/match-history/v1/history/{user_id}"
+			url = f"https://pd.na.a.pvp.net/match-history/v1/history/{user_id}?endIndex={int(config_main.get('amount_of_matches_for_player_stats', '10'))}{search}"
 			headers = internal_api_headers_console
 
-		response = session.get(url, headers=headers)
+		response = requests.get(url, headers=headers)
+		if response.status_code == 429:
+			print("Rate Limited!")
+			raise Exception("Rate Limited")
 		history = response.json().get("History", [])
 		time.sleep(2.5)  # Delay to prevent rate limiting
 
 		save_match_data = None
-
 		for i in history:
 			match_id = i["MatchID"]
 			match_url = f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}"
-			match_response = session.get(match_url, headers=headers)
+			match_response = requests.get(match_url, headers=headers)
 
 			match_data = match_response.json()
 			player_data = match_data.get("players", [])
@@ -820,30 +858,23 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC"):
 					wins.append(Fore.GREEN + "■" if won else Fore.RED + "■")
 					kills += match["stats"]["kills"]
 					deaths += match["stats"]["deaths"]
+
+					agent = get_agent_data_from_id(match["characterId"])  # TODO | Unused
+
 			headshot.append(round(get_headshot_percent(match_data)[str(user_id)]))
-		avg = sum(headshot) / len(headshot)
+		try:
+			avg = sum(headshot) / len(headshot)
+		except ZeroDivisionError:
+			avg = 0
 
-
-		"""
-		# Check if any party members are in the same current game
-		current_parties = {}
-		for party_id, members in partyIDs.items():
-			for member in members:
-				if any(str(player["subject"]) == str(member) for player in save_match_data):
-					current_parties[party_id] = member
-					break
-
-		with open("test_data.json", "a") as file:
-			json.dump(current_parties, file, indent=4)
-		"""
 		kd_ratio = calculate_kd(kills, deaths)
-		cache[user_id] = (kd_ratio, wins, avg)
+		cache[user_id] = (kd_ratio, wins, round(avg))
 
 		return partyIDs, cache
 
 	except Exception as e:
 		print(f"Error: {e}")
-		cache[user_id] = (0, ['Error'])
+		cache[user_id] = (-1, ['Error'], -1)
 		return {}, cache
 
 
@@ -863,8 +894,7 @@ def get_members_of_party_from_uuid(player_id: str):
 		except Exception as e:
 			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 			logger.log(1, traceback_str)
-			raise e
-			party_id = None
+			print("Error Logged!")
 
 	if party_id is not None:
 		with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/parties/{party_id}", headers=internal_api_headers) as r:
@@ -888,17 +918,17 @@ def get_rank_color(rank: str):
 		"Silver": "\033[37m",  # Light Gray/White
 		"Gold": "\033[33m",  # Yellow
 		"Plat": "\033[36m",  # Cyan
-		"Diamond": "\033[35m",  # Magenta (Updated Diamond)
+		"Diamond": "\033[35m",  # Magenta
 		"Ascendant": "\033[38;5;82m",  # Bright Green
-		"Immortal": "\033[31m",  # Red (Updated Immortal)
-		"Radiant": "\033[38;5;196m\033[38;5;202m\033[38;5;226m\033[38;5;82m\033[38;5;33m\033[38;5;201m"  # Rainbow (Multi-Colored)
+		"Immortal": "\033[31m",  # Red
+		"Radiant": "\033[38;5;196mR\033[38;5;202ma\033[38;5;226md\033[38;5;82mi\033[36ma\033[38;5;33mn\033[38;5;201mt"  # Rainbow (Multi-Colored)
 	}
 
 	RESET = "\033[0m"  # Reset color to default
 
 	# If the rank is Radiant, apply the multicolored effect
 	if "Radiant" in rank.capitalize():
-		return f"{RANK_COLORS['Radiant']}[{rank}]{RESET}"
+		return f"[{RANK_COLORS['Radiant']}]{RESET}"
 
 	# For other ranks, return the appropriate color
 	for rank_name, color in RANK_COLORS.items():
@@ -909,8 +939,45 @@ def get_rank_color(rank: str):
 	return f"\033[90m[{rank}]{RESET}"  # No color, default text
 
 
+def get_user_current_state(puuid: str) -> int:
+	"""
+	:return: int: 1 = In Menus, 2 = In Menus Queueing, 3 = Pregame, 4 = In-Game, 5 = Other State, -1 = Error
+	"""
+	requests.packages.urllib3.disable_warnings()  # noqa
+	try:
+
+		with requests.get(f"https://127.0.0.1:{port}/chat/v4/presences",
+		                  headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
+			data = r.json()
+
+		all_user_data = data["presences"]
+		for user in all_user_data:
+			if user["puuid"] == puuid:
+				encoded_user_data: str = user["private"]
+				decoded_user_data = loads(b64decode(encoded_user_data))
+				state = decoded_user_data["sessionLoopState"]
+				party_state = decoded_user_data["partyState"]
+				if state == "MENUS":
+					if party_state == "DEFAULT":
+						return 1
+					elif party_state == "MATCHMAKING":
+						return 2
+					elif party_state == "MATCHMADE_GAME_STARTING":
+						return 3
+				elif state == "PREGAME":
+					return 3
+				elif state == "INGAME":
+					return 4
+				else:
+					return 5
+	except Exception as e:
+		traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+		logger.log(1, traceback_str)
+	return -1
+
+
 def get_current_game_score(puuid: str) -> tuple[int, int]:
-	requests.packages.urllib3.disable_warnings()
+	requests.packages.urllib3.disable_warnings()  # noqa
 	try:
 
 		with requests.get(f"https://127.0.0.1:{port}/chat/v4/presences",
@@ -968,7 +1035,10 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 					match_id = r.json()["MatchID"]
 					break
 				else:
-					pass
+					if 3 <= get_user_current_state(str(val_uuid)) <= 4:
+						pass
+					else:
+						return
 		except:
 			pass
 
@@ -1013,7 +1083,7 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 							player_id = player["PlayerIdentity"]["Subject"]
 							team_id = player["TeamID"]
 							player_lvl = player["PlayerIdentity"]["AccountLevel"]
-							agent_name = get_agentdata_from_id(player['CharacterID'])
+							agent_name = get_agent_data_from_id(player['CharacterID'])
 
 							host_player = get_userdata_from_id(player_id, val_uuid)[0]
 							player_name_cache.append(host_player)
@@ -1149,7 +1219,7 @@ def print_buffered(buffer):
 
 
 def add_parties(partys, new_parties):
-	with open("partys_thing.json", "a") as file:
+	with open(f"{DATA_PATH}/partys_thing.json", "a") as file:
 		dump(partys, file, indent=4)
 	for party_id, new_players in new_parties.items():
 		if party_id in partys:
@@ -1188,7 +1258,7 @@ async def run_pregame(data: dict):
 			with requests.get(f"https://glz-na-1.na.a.pvp.net/pregame/v1/matches/{data['MatchID']}",
 			                  headers=internal_api_headers) as r:
 				match_data = r.json()
-				with open("pre_match_data.json", "w") as f:
+				with open(f"{DATA_PATH}/pre_match_data.json", "w") as f:
 					dump(match_data, f, indent=4)
 
 			if not got_map_and_gamemode:
@@ -1212,7 +1282,7 @@ async def run_pregame(data: dict):
 				party_symbol = ""
 
 				try:
-					agent_name = get_agentdata_from_id(ally_player["CharacterID"])
+					agent_name = get_agent_data_from_id(ally_player["CharacterID"])
 				except Exception:
 					agent_name = "None"
 
@@ -1259,7 +1329,7 @@ async def run_pregame(data: dict):
 				buffer.write(color_text(f"Player KD: {kd} | Headshot: {avg}%\nPast Matches: {''.join(wins)}\n\n", Fore.MAGENTA))
 
 			got_rank = True
-			buffer.write(color_text(f"Enemy team: {match_data['EnemyTeamLockCount']}/5 LOCKED\n", Fore.RED))
+			buffer.write(color_text(f"Enemy team: {match_data['EnemyTeamLockCount']}/{match_data['EnemyTeamSize']} LOCKED\n", Fore.RED))
 			if match_data["PhaseTimeRemainingNS"] == 0:
 				buffer.write(color_text("In Loading Phase\n", Fore.CYAN))
 				break
@@ -1319,7 +1389,7 @@ async def listen_for_input(party_id: str):
 	while True:
 		try:
 			user_input = await asyncio.to_thread(input, "> ")  # Non-blocking input
-			user_input = user_input.strip().lower()
+			user_input: str = user_input.strip().lower()
 
 			if user_input == "r":
 				is_ready = not is_ready
@@ -1338,13 +1408,13 @@ async def listen_for_input(party_id: str):
 			break
 
 
-async def get_party():
+async def get_party(got_rank: dict = None):
 	global input_task
-	cancel = False
 	buffer = StringIO()
 	last_rendered_content = ""
 	input_task = None  # Task for input handling
-	got_rank = {}
+	if got_rank is None:
+		got_rank = {}
 	while True:
 		await check_if_user_in_pregame()
 		try:
@@ -1408,11 +1478,12 @@ async def get_party():
 					print_buffered(buffer)
 
 				await asyncio.sleep(0.25)
-
+				"""
 				if cancel:
 					last_rendered_content = ""
 					await check_if_user_in_pregame()
 					break
+				"""
 			else:
 				new_message = color_text("Valorant is not running for that user!\n", Fore.RED)
 				if new_message != last_rendered_content:
@@ -1429,10 +1500,6 @@ async def get_party():
 			print("Error Logged!")
 			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 			logger.log(1, traceback_str)
-
-
-# print("Re-logging In!")
-# await log_in()
 
 
 async def check_if_user_in_pregame(send_message: bool = False):
@@ -1454,14 +1521,18 @@ async def check_if_user_in_pregame(send_message: bool = False):
 	# Try playing in-game
 	with requests.get(f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}",
 	                  headers=internal_api_headers) as r:
-		data = r.json()
-	try:
-		if data["errorCode"] == "RESOURCE_NOT_FOUND":
-			pass
-	except KeyError:
-		if data["MatchID"]:
-			clear_console()
-			await run_in_game()
+		try:
+			return_code = r.status_code
+			if return_code == 200:
+				clear_console()
+				await run_in_game()
+			elif return_code == 400:
+				await log_in()
+			else:
+				pass
+		except Exception as e:
+			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+			logger.log(1, f"Error: {traceback_str}")
 
 	return
 
