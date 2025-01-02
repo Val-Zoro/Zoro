@@ -26,5 +26,4 @@
 - Have Fun :D
 
 # Working on
-- ~~Persistent login~~
-- ~~Browser login for better login with 2fa~~
+- Deeper postgame and pregame statistics
