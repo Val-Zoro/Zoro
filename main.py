@@ -1,4 +1,4 @@
-VERSION = "v2.1.5"
+VERSION = "v2.1.6"
 
 import asyncio
 import threading
@@ -50,8 +50,8 @@ if not os.path.exists("config.ini"):
 	                   f'; Amount of matches to look at before using that data for player stats\n'
 	                   f'; Wins / Loss | KD, HS%, ETC\n'
 	                   f'; Default = 10\n'
-	                   f'\n'
 	                   f'amount_of_matches_for_player_stats = 10\n'
+	                   f'\n'
 	                   f'; What game mode should these stats be taken from\n'
 	                   f'; "ALL", "SAME", Specific -> "competitive", "unrated"\n'
 	                   f'; Default = "ALL"\n'
@@ -806,6 +806,8 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC", ga
 	headshot = []
 	search = ""
 
+	session = create_session()
+
 	try:
 		stats_used_game_mode = config_main.get("stats_used_game_mode", "ALL").lower()
 		if stats_used_game_mode != "all":
@@ -822,10 +824,11 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC", ga
 			url = f"https://pd.na.a.pvp.net/match-history/v1/history/{user_id}?endIndex={int(config_main.get('amount_of_matches_for_player_stats', '10'))}{search}"
 			headers = internal_api_headers_console
 
-		response = requests.get(url, headers=headers)
+		response = session.get(url, headers=headers)
 		if response.status_code == 429:
 			print("Rate Limited!")
-			raise Exception("Rate Limited")
+			time.sleep(10)
+			response = session.get(url, headers=headers)
 		history = response.json().get("History", [])
 		time.sleep(2.5)  # Delay to prevent rate limiting
 
@@ -833,7 +836,7 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC", ga
 		for i in history:
 			match_id = i["MatchID"]
 			match_url = f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}"
-			match_response = requests.get(match_url, headers=headers)
+			match_response = session.get(match_url, headers=headers)
 
 			match_data = match_response.json()
 			player_data = match_data.get("players", [])
@@ -939,16 +942,18 @@ def get_rank_color(rank: str):
 	return f"\033[90m[{rank}]{RESET}"  # No color, default text
 
 
-def get_user_current_state(puuid: str) -> int:
+def get_user_current_state(puuid: str, presences_data: dict = None) -> int:
 	"""
 	:return: int: 1 = In Menus, 2 = In Menus Queueing, 3 = Pregame, 4 = In-Game, 5 = Other State, -1 = Error
 	"""
 	requests.packages.urllib3.disable_warnings()  # noqa
 	try:
-
-		with requests.get(f"https://127.0.0.1:{port}/chat/v4/presences",
-		                  headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
-			data = r.json()
+		if presences_data is None:
+			with requests.get(f"https://127.0.0.1:{port}/chat/v4/presences",
+			                  headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
+				data = r.json()
+		else:
+			data = presences_data
 
 		all_user_data = data["presences"]
 		for user in all_user_data:
@@ -1406,6 +1411,20 @@ async def listen_for_input(party_id: str):
 		except Exception as e:
 			print(f"Error in input listener: {e}")
 			break
+
+
+async def get_friend_states():
+	with requests.get(f"https://127.0.0.1:{port}/chat/v4/presences",
+	                  headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
+		data = r.json()
+	friend_list = []
+	all_user_data = data["presences"]
+	for user in all_user_data:
+		if user["activePlatform"] is not None:
+			state = get_user_current_state(user["puuid"], data)
+			state_str = "In Menu" if state == 1 else "Queueing" if state == 2 else "Pre-game" if state == 3 else "In-game"
+			full_str = f"{user['game_name']}#{user['game_tag']}: {state_str}"
+			friend_list.append(full_str)
 
 
 async def get_party(got_rank: dict = None):
