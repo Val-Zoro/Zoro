@@ -1,4 +1,4 @@
-VERSION = "v2.2.0"
+VERSION = "v2.2.1"
 
 import asyncio
 import threading
@@ -48,8 +48,17 @@ port = ""
 
 input_task = None
 
+GAME_MODES = {"unrated": "Unrated",
+              "competitive": "Competitive",
+              "swiftplay": "Swiftplay",
+              "spikerush": "Spikerush",
+              "deathmatch": "Deathmatch",
+              "ggteam": "Escalation",
+              "hurm": "Team Deathmatch"}
+
+"""
 CONFIG_FILE = "config.ini"
-if not os.path.exists("config.ini"):
+if not os.path.exists(CONFIG_FILE):
 	raw_config_data = (f'[Main]\n'
 	                   f'; Amount of matches to look at before using that data for player stats\n'
 	                   f'; Wins / Loss | KD, HS%, ETC\n'
@@ -68,9 +77,14 @@ parentdir = os.path.dirname(__file__)
 
 config.read("/".join([parentdir, CONFIG_FILE]))
 config_main = config["Main"]
+"""
+
+config_main = {"stats_used_game_mode": "All", "amount_of_matches_for_player_stats": "10", "debug": True}
 
 OUTPUT_PATH = Path(__file__).parent
 ASSETS_PATH = OUTPUT_PATH / Path("./assets")
+
+DEBUG = bool(config_main["debug"])
 
 DATA_PATH = "data"
 if not os.path.exists(DATA_PATH):
@@ -271,8 +285,11 @@ async def get_user_data_from_riot_client():
 
 	# get lockfile password
 	file_path = os.getenv("localappdata")
-	with open(f"{file_path}\\Riot Games\\Riot Client\\Config\\lockfile", "r") as f:
-		lockfile_data = f.read()
+	try:
+		with open(f"{file_path}\\Riot Games\\Riot Client\\Config\\lockfile", "r") as f:
+			lockfile_data = f.read()
+	except:
+		print("Riot Client isn't logged into an account!\nRetrying!")
 	# Base 64 encode the password
 	password = b64encode(f"riot:{str(lockfile_data.split(':')[3])}".encode("ASCII")).decode()
 	# Get the port the WS is running on
@@ -830,6 +847,7 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC", ga
 
 		response = session.get(url, headers=headers)
 		if response.status_code == 429:
+			logger.log(2, "Rate Limited")
 			print("Rate Limited!")
 			time.sleep(10)
 			response = session.get(url, headers=headers)
@@ -880,6 +898,8 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC", ga
 		return partyIDs, cache
 
 	except Exception as e:
+		traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+		logger.log(1, traceback_str)
 		print(f"Error: {e}")
 		cache[user_id] = (-1, ['Error'], -1)
 		return {}, cache
@@ -927,7 +947,7 @@ def get_rank_color(rank: str):
 		"Plat": "\033[36m",  # Cyan
 		"Diamond": "\033[35m",  # Magenta
 		"Ascendant": "\033[38;5;82m",  # Bright Green
-		"Immortal": "\033[31m",  # Red
+		"Immortal": f"{Fore.LIGHTRED_EX}",  # Red
 		"Radiant": "\033[38;5;196mR\033[38;5;202ma\033[38;5;226md\033[38;5;82mi\033[36ma\033[38;5;33mn\033[38;5;201mt"  # Rainbow (Multi-Colored)
 	}
 
@@ -1074,58 +1094,78 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 			                  headers=internal_api_headers) as r:
 				if r.status_code == 400:
 					await log_in()
-				match_data = r.json()
+					return None
+				elif r.status_code == 404:
+					return None
+				else:
+					match_data = r.json()
 
-				if r.status_code != 404 or match_data["State"] != "CLOSED":
-					map_id = match_data["MapID"]
-					try:
-						gamemode_name = match_data["MatchmakingData"]["QueueID"]
-					except TypeError:
-						gamemode_name = match_data["ProvisioningFlow"]
+			if match_data["State"] != "CLOSED" or match_data["State"] != "POST_GAME":
+				map_id = match_data["MapID"]
+				try:
+					gamemode_name = str(match_data["MatchmakingData"]["QueueID"]).capitalize()
+					is_solo = False
+				except TypeError:
+					gamemode_name = match_data["ProvisioningFlow"]
+					if gamemode_name == "ShootingRange":
+						gamemode_name = "Shooting Range"
+					if gamemode_name == "ReplayNewPlayerExperience":
+						gamemode_name = "Tutorial"
+					is_solo = True
+				if not is_solo:
 					map_name = get_mapdata_from_id(map_id)
+				else:
+					map_name = "The Range"
 
-					buffer.write(Fore.GREEN + f"Map: {map_name}\n" + Style.RESET_ALL)
-					buffer.write(Fore.CYAN + f"Game mode: {str(gamemode_name).capitalize()}\n\n" + Style.RESET_ALL)
+				buffer.write(Fore.GREEN + f"Map: {map_name}\n" + Style.RESET_ALL)
+				buffer.write(Fore.CYAN + f"Game mode: {str(gamemode_name)}\n\n" + Style.RESET_ALL)
 
-					if not got_players:
-						threads = []
-						for player in match_data["Players"]:
-							player_id = player["PlayerIdentity"]["Subject"]
-							team_id = player["TeamID"]
-							player_lvl = player["PlayerIdentity"]["AccountLevel"]
-							agent_name = get_agent_data_from_id(player['CharacterID'])
-
-							host_player = get_userdata_from_id(player_id, val_uuid)[0]
-							player_name_cache.append(host_player)
-
-							if "console" in gamemode_name:
-								rank = get_rank_from_uuid(str(player_id), "CONSOLE")
-								thread = threading.Thread(target=fetch_player_data, args=(player_id, "CONSOLE"))
-								threads.append(thread)
-								thread.start()
-							else:
-								rank = get_rank_from_uuid(str(player_id))
-								thread = threading.Thread(target=fetch_player_data, args=(player_id, "PC"))
-								threads.append(thread)
-								thread.start()
-
-							if team_id.lower() == "blue":
-								team_blue_player_list[host_player] = (agent_name, player_lvl, rank, player_id)
-							elif team_id.lower() == "red":
-								team_red_player_list[host_player] = (agent_name, player_lvl, rank, player_id)
-
-							player_data[host_player] = cache.get(str(player_id), ("Loading", "Loading", "Loading"))
-
-					count = 0
-					party_exists = []
-					party_number = 1
+				if not got_players:
+					threads = []
 					for player in match_data["Players"]:
 						player_id = player["PlayerIdentity"]["Subject"]
-						player_data[str(player_name_cache[count])] = cache.get(str(player_id), ("Loading", "Loading", "Loading"))
-						count += 1
 
-					# Ensure the rank color is applied correctly
+						team_id = player["TeamID"]
 
+						is_level_hidden = player["PlayerIdentity"]["HideAccountLevel"]
+						if not is_level_hidden:
+							player_lvl = str(player["PlayerIdentity"]["AccountLevel"])
+						else:
+							player_lvl = "HIDDEN"
+
+						agent_name = get_agent_data_from_id(player['CharacterID'])
+
+						host_player = get_userdata_from_id(player_id, val_uuid)[0]
+						player_name_cache.append(host_player)
+
+						if "console" in gamemode_name:
+							rank = get_rank_from_uuid(str(player_id), "CONSOLE")
+							thread = threading.Thread(target=fetch_player_data, args=(player_id, "CONSOLE"))
+							threads.append(thread)
+							thread.start()
+						else:
+							rank = get_rank_from_uuid(str(player_id))
+							thread = threading.Thread(target=fetch_player_data, args=(player_id, "PC"))
+							threads.append(thread)
+							thread.start()
+
+						if team_id.lower() == "blue":
+							team_blue_player_list[host_player] = (agent_name, player_lvl, rank, player_id)
+						elif team_id.lower() == "red":
+							team_red_player_list[host_player] = (agent_name, player_lvl, rank, player_id)
+
+						player_data[host_player] = cache.get(str(player_id), ("Loading", "Loading", "Loading"))
+
+				count = 0
+				party_exists = []
+				party_number = 1
+				for player in match_data["Players"]:
+					player_id = player["PlayerIdentity"]["Subject"]
+					player_data[str(player_name_cache[count])] = cache.get(str(player_id), ("Loading", "Loading", "Loading"))
+					count += 1
+
+				# Ensure the rank color is applied correctly
+				if len(team_blue_player_list) >= 1:
 					buffer.write(Fore.BLUE + "Team Blue:\n" + Style.RESET_ALL)
 					for user_name, data in team_blue_player_list.items():
 						party_symbol = ""
@@ -1146,6 +1186,7 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 						kd, wins, hs = player_data.get(user_name, ("Loading", "Loading", "Loading"))
 						buffer.write(Fore.MAGENTA + f"Player KD: {kd} | Headshot: {hs}%\nPast Matches: {''.join(wins)}\n\n" + Style.RESET_ALL)
 
+				if len(team_red_player_list) >= 1:
 					buffer.write(Fore.RED + "VS\n\nTeam Red:\n" + Style.RESET_ALL)
 					for user_name, data in team_red_player_list.items():
 						party_symbol = ""
@@ -1166,53 +1207,53 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 						kd, wins, hs = player_data.get(user_name, ("Loading", "Loading", "Loading"))
 						buffer.write(Fore.MAGENTA + f"Player KD: {kd} | Headshot: {hs}%\nPast Matches: {''.join(wins)}\n\n" + Style.RESET_ALL)
 
-					score = get_current_game_score(val_uuid)
-					buffer.write(f"{score[0]} | {score[1]}\n")
+				score = get_current_game_score(val_uuid)
+				buffer.write(f"{score[0]} | {score[1]}\n")
 
-					got_players = True
+				got_players = True
 
-					try:
-						with requests.get(f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}",
-						                  headers=internal_api_headers) as re_match_stats:
-							match_stats = re_match_stats.json()
+				try:
+					with requests.get(f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}",
+					                  headers=internal_api_headers) as re_match_stats:
+						match_stats = re_match_stats.json()
 
-						total_rounds = match_stats["teams"][0]["roundsPlayed"]
-						team_1_rounds = match_stats["teams"][0]["roundsWon"]
-						team_2_rounds = match_stats["teams"][1]["roundsWon"]
+					total_rounds = match_stats["teams"][0]["roundsPlayed"]
+					team_1_rounds = match_stats["teams"][0]["roundsWon"]
+					team_2_rounds = match_stats["teams"][1]["roundsWon"]
 
-						buffer.write(Fore.YELLOW + f"Total Rounds: {total_rounds}\n" + Style.RESET_ALL)
-						buffer.write(Fore.YELLOW + f"Score: {team_1_rounds}  |  {team_2_rounds}\n" + Style.RESET_ALL)
-						if len(threads) > 0:
-							for thread in threads:
-								if thread.is_alive():
-									print("Thread is alive!")
-						await asyncio.sleep(3)
-						return
+					buffer.write(Fore.YELLOW + f"Total Rounds: {total_rounds}\n" + Style.RESET_ALL)
+					buffer.write(Fore.YELLOW + f"Score: {team_1_rounds}  |  {team_2_rounds}\n" + Style.RESET_ALL)
+					if len(threads) > 0:
+						for thread in threads:
+							if thread.is_alive():
+								print("Thread is alive!")
+					await asyncio.sleep(3)
+					return
 
-					except:
-						pass
+				except:
+					pass
 
-					# Render buffer content if it has changed
-					current_rendered_content = buffer.getvalue()
-					if current_rendered_content != last_rendered_content:
-						clear_console()
-						print(current_rendered_content)
-						last_rendered_content = current_rendered_content
-
-					time.sleep(5)
-
-				else:
-					# TODO | Will fix later
-					"""
+				# Render buffer content if it has changed
+				current_rendered_content = buffer.getvalue()
+				if current_rendered_content != last_rendered_content:
 					clear_console()
-					print("Match Ended!")
-					print("Loading Match Report (BETA)")
-					report = generate_match_report(match_stats, val_uuid, False)
-					for line in report:
-						print(line)
-					input("\nPress any key to continue")
-					"""
-					return None
+					print(current_rendered_content)
+					last_rendered_content = current_rendered_content
+
+				time.sleep(5)
+
+			else:
+				# TODO | Will fix later
+				"""
+				clear_console()
+				print("Match Ended!")
+				print("Loading Match Report (BETA)")
+				report = generate_match_report(match_stats, val_uuid, False)
+				for line in report:
+					print(line)
+				input("\nPress any key to continue")
+				"""
+				return None
 		except KeyboardInterrupt:
 			sys.exit(1)
 		except Exception as e:
@@ -1288,8 +1329,11 @@ async def run_pregame(data: dict):
 
 			for ally_player in match_data["AllyTeam"]["Players"]:
 				user_name, is_user = get_userdata_from_id(ally_player["PlayerIdentity"]["Subject"], val_uuid)
-				player_level = ally_player["PlayerIdentity"]["AccountLevel"]
-
+				is_level_hidden = ally_player["PlayerIdentity"]["HideAccountLevel"]
+				if not is_level_hidden:
+					player_level = str(ally_player["PlayerIdentity"]["AccountLevel"])
+				else:
+					player_level = "HIDDEN"
 				party_symbol = ""
 
 				try:
@@ -1440,6 +1484,9 @@ async def listen_for_input(party_id: str):
 			elif "leave" in user_input.lower():
 				print("Leaving")
 				quit_game()
+			if DEBUG:
+				if user_input.lower()[0] == "-":
+					exec(user_input[1::])
 
 		except Exception as e:
 			print(f"Error in input listener: {e}")
@@ -1448,17 +1495,24 @@ async def listen_for_input(party_id: str):
 
 async def get_friend_states() -> list[str]:
 	requests.packages.urllib3.disable_warnings()  # noqa
-	with requests.get(f"https://127.0.0.1:{port}/chat/v4/presences",
-	                  headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
-		data = r.json()
 	friend_list = []
-	all_user_data = data["presences"]
-	for user in all_user_data:
-		if user["activePlatform"] is not None:
-			state = get_user_current_state(user["puuid"], data)
-			state_str = "In Menu" if state == 1 else "Queueing" if state == 2 else "Pre-game" if state == 3 else "In-game"
-			full_str = f"{user['game_name']}#{user['game_tag']}: {state_str}"
-			friend_list.append(full_str)
+	try:
+		with requests.get(f"https://127.0.0.1:{port}/chat/v4/presences",
+		                  headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
+			data = r.json()
+		all_user_data = data["presences"]
+		for user in all_user_data:
+			if user["activePlatform"] is not None:
+				if str(user["puuid"]) != str(val_uuid):
+					state = get_user_current_state(user["puuid"], data)
+					state_str = "In Menu" if state == 1 else "Queueing" if state == 2 else "Pre-game" if state == 3 else "In-game"
+					full_str = f"{user['game_name']}#{user['game_tag']}: {state_str}"
+					friend_list.append(full_str)
+	except Exception as e:
+		raise e
+		print("Please make sure Riot Client is open!")
+		return []
+
 	return friend_list
 
 
@@ -1471,7 +1525,10 @@ async def get_party(got_rank: dict = None):
 	got_rank = got_rank or {}
 
 	while True:
-		await check_if_user_in_pregame()
+		return_code = await check_if_user_in_pregame()
+		if return_code:
+			last_rendered_content = ""
+			clear_console()
 		try:
 			buffer.truncate(0)
 			buffer.seek(0)
@@ -1534,13 +1591,14 @@ def parse_party_data(party_data, got_rank):
 	if is_queueing == "MATCHMAKING":
 		messages.append(color_text("Queueing!\n", Fore.YELLOW))
 
-	game_mode = party_data.get("MatchmakingData", {}).get("QueueID", "Unknown").capitalize()
-	messages.append(color_text(f"Mode: {game_mode}\n\n", Fore.GREEN))
+	game_mode = str(party_data.get("MatchmakingData", {}).get("QueueID", "Unknown")).lower()
+	game_mode = GAME_MODES.get(game_mode.lower(), str(game_mode))
+	messages.append(color_text(f"Mode: {game_mode.capitalize()}\n\n", Fore.GREEN))
 
 	for member in party_data.get("Members", []):
 		player_name, is_user = get_userdata_from_id(str(member["Subject"]), val_uuid)
 		is_leader = member.get("IsOwner", False)
-		player_lvl = member["PlayerIdentity"].get("AccountLevel", "0")
+		player_lvl = member["PlayerIdentity"].get("AccountLevel", "-1")
 
 		color = Fore.YELLOW if is_user else (Fore.LIGHTRED_EX if is_leader else Fore.WHITE)
 		leader_text = "[Leader] " if is_leader else ""
@@ -1555,8 +1613,9 @@ def parse_party_data(party_data, got_rank):
 	return messages
 
 
-def render_no_party_message(buffer, last_rendered_content):
+def render_no_party_message(buffer: StringIO, last_rendered_content: str):
 	"""Render a message when no party is found."""
+	clear_console()
 	new_message = color_text("Valorant is not running for that user!\n", Fore.RED)
 	if new_message != last_rendered_content:
 		buffer.write(new_message)
@@ -1573,7 +1632,7 @@ async def handle_exception(exception):
 		sys.exit(1)
 
 
-async def check_if_user_in_pregame(send_message: bool = False):
+async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 	if send_message:
 		print("\n\nChecking if player is in match")
 
@@ -1589,6 +1648,7 @@ async def check_if_user_in_pregame(send_message: bool = False):
 		if data["MatchID"]:
 			clear_console()
 			await run_pregame(data)
+			return True
 
 	# Try playing in-game
 	with requests.get(f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}",
@@ -1598,15 +1658,16 @@ async def check_if_user_in_pregame(send_message: bool = False):
 			if return_code == 200:
 				clear_console()
 				await run_in_game()
+				return True
 			elif return_code == 400:
 				await log_in()
 			else:
-				pass
+				return False
 		except Exception as e:
 			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 			logger.log(1, f"Error: {traceback_str}")
 
-	return
+	return False
 
 
 def get_userdata_from_token() -> tuple[str, str]:
@@ -1651,7 +1712,7 @@ async def display_friend_states(friend_states: list) -> None:
 		table.add_column("Friend", style="cyan")
 		table.add_column("Status", style="green")
 		for friend_state in friend_states:
-			friend_name, status = friend_state.split(":")  # Example format
+			friend_name, status = friend_state.split(":")
 			table.add_row(friend_name, status)
 		console.print(table)
 
@@ -1712,8 +1773,8 @@ if __name__ == "__main__":
 	logger.load_public_key(pub_key)
 
 	console = Console()
-
-	try:
-		asyncio.run(main())
-	except KeyboardInterrupt:
-		sys.exit(1)
+	while True:
+		try:
+			asyncio.run(main())
+		except KeyboardInterrupt:
+			sys.exit(1)
