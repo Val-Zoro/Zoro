@@ -1,4 +1,4 @@
-VERSION = "v2.2.1"
+VERSION = "v2.3.5-DEV"
 
 import asyncio
 import threading
@@ -11,8 +11,10 @@ import aiohttp
 import colorama
 import requests
 import ssl
+import hashlib
+import tkinter
 
-from json import dump, loads
+from json import dump, dumps, loads, load
 from platform import system, version
 from wmi import WMI
 from Crypto.PublicKey import RSA
@@ -25,14 +27,20 @@ from colorama import Fore, Style
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry  # noqa | Ignore, should work fine
 from pathlib import Path
-from tkinter import Tk, ttk, Canvas, Frame, Scrollbar
-from tkinter import Label as tkLabel
 from PIL import Image, ImageTk
 from datetime import datetime, timedelta
 
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
+from rich import pretty
+
+from tkinter import ttk, Frame, Label, Button
+
+console = Console()
+pretty.install()
+
+DEBUG = False
 
 val_token = ""
 val_access_token = ""
@@ -46,45 +54,129 @@ internal_api_headers_console = {}
 password = ""
 port = ""
 
+MAX_CONCURRENT_REQUESTS = 2
+request_semaphore = threading.Semaphore(MAX_CONCURRENT_REQUESTS)
+
 input_task = None
 
-GAME_MODES = {"unrated": "Unrated",
-              "competitive": "Competitive",
-              "swiftplay": "Swiftplay",
-              "spikerush": "Spikerush",
-              "deathmatch": "Deathmatch",
-              "ggteam": "Escalation",
-              "hurm": "Team Deathmatch"}
+GAME_MODES = {
+	"unrated": "Unrated",
+	"competitive": "Competitive",
+	"swiftplay": "Swiftplay",
+	"spikerush": "Spikerush",
+	"deathmatch": "Deathmatch",
+	"ggteam": "Escalation",
+	"hurm": "Team Deathmatch"
+}
 
-"""
 CONFIG_FILE = "config.ini"
-if not os.path.exists(CONFIG_FILE):
-	raw_config_data = (f'[Main]\n'
-	                   f'; Amount of matches to look at before using that data for player stats\n'
-	                   f'; Wins / Loss | KD, HS%, ETC\n'
-	                   f'; Default = 10\n'
-	                   f'amount_of_matches_for_player_stats = 10\n'
-	                   f'\n'
-	                   f'; What game mode should these stats be taken from\n'
-	                   f'; "ALL", "SAME", Specific -> "competitive", "unrated"\n'
-	                   f'; Default = "ALL"\n'
-	                   f'stats_used_game_mode = ALL')
+
+
+def create_default_config():
+	"""Creates a default config file."""
+	raw_config_data = (
+			'[Main]\n'
+			'; Amount of matches to look at before using that data for player stats\n'
+			'; Wins / Loss | KD, HS%, ETC\n'
+			'; Default = 10\n'
+			'amount_of_matches_for_player_stats = 10\n'
+			'\n'
+			'; What game-mode should these stats be taken from\n'
+			'; Valid values: "ALL", "SAME", or one of the following\n; ' +
+			"\n; ".join([f"{code} ({name})" for code, name in GAME_MODES.items()]) + '\n'
+			                                                                         '; Default = "ALL"\n'
+			                                                                         'stats_used_game_mode = ALL\n'
+	)
 	with open(CONFIG_FILE, "w") as file:
 		file.write(raw_config_data)
+	console.print(Panel("Default config file created.", style="bold green"))
+	time.sleep(5)
 
+
+# Create a default config file if it doesn't exist.
+if not os.path.exists(CONFIG_FILE):
+	create_default_config()
+
+# Read the config file.
 config = configparser.ConfigParser()
-parentdir = os.path.dirname(__file__)
+config.read(CONFIG_FILE)
 
-config.read("/".join([parentdir, CONFIG_FILE]))
+# Ensure the expected section is present.
+if "Main" not in config:
+	console.print(Panel("Config file is missing the 'Main' section. Recreating default config.", style="bold red"))
+	create_default_config()
+	config.read(CONFIG_FILE)
+
 config_main = config["Main"]
-"""
 
-config_main = {"stats_used_game_mode": "All", "amount_of_matches_for_player_stats": "10", "debug": True}
+
+def validate_and_fix_config(config_main):
+	"""
+	Validates each configuration value and reverts only the problematic ones to default values.
+
+	Validations:
+	  - 'amount_of_matches_for_player_stats' must be an integer between 1 and 20.
+	  - 'stats_used_game_mode' must be 'ALL', 'SAME', or one of the allowed game mode codes.
+	"""
+	changes_made = False
+
+	# Validate amount_of_matches_for_player_stats.
+	default_amount = 10
+	amt_str = config_main.get("amount_of_matches_for_player_stats", str(default_amount))
+	try:
+		amt = int(amt_str)
+		if not (1 <= amt <= 20):
+			console.rule("[bold red]Configuration Warning[/bold red]")
+			console.print(f"[red]Error:[/red] 'amount_of_matches_for_player_stats' is set to [bold]{amt}[/bold].")
+			console.print("  It must be an integer between 1 and 20. Reverting to default (10).")
+			config_main["amount_of_matches_for_player_stats"] = str(default_amount)
+			changes_made = True
+	except ValueError:
+		console.rule("[bold red]Configuration Warning[/bold red]")
+		console.print(f"[red]Error:[/red] 'amount_of_matches_for_player_stats' value '{amt_str}' is not a valid integer.")
+		console.print("  Reverting to default (10).")
+		config_main["amount_of_matches_for_player_stats"] = str(default_amount)
+		changes_made = True
+
+	# Validate stats_used_game_mode.
+	default_mode = "ALL"
+	mode_str = config_main.get("stats_used_game_mode", default_mode).strip()
+	mode_lower = mode_str.lower()
+	valid_modes = ["all", "same"] + list(GAME_MODES.keys())
+	if mode_lower not in valid_modes:
+		pretty_options = ["ALL", "SAME"] + [f"{code} ({name})" for code, name in GAME_MODES.items()]
+		console.rule("[bold red]Configuration Warning[/bold red]")
+		console.print(f"[red]Error:[/red] 'stats_used_game_mode' is set to [bold]'{mode_str}'[/bold].")
+		console.print("  It must be one of the following:")
+		console.print("    " + ", ".join(pretty_options))
+		console.print(f"  Reverting to default ({default_mode}).")
+		config_main["stats_used_game_mode"] = default_mode
+		changes_made = True
+	else:
+		# Normalize the value: use uppercase for special keywords; game modes stay lowercase.
+		if mode_lower in ["all", "same"]:
+			config_main["stats_used_game_mode"] = mode_lower.upper()
+		else:
+			config_main["stats_used_game_mode"] = mode_lower
+
+	# If any corrections were made, update the config file.
+	if changes_made:
+		console.print(Panel("Please update the config file to permanently fix the issue!", style="bold yellow"))
+		input("Press enter to continue...")
+
+
+validate_and_fix_config(config_main)
+
+if DEBUG:
+	console.print(Panel("Config file validated successfully.", style="bold green"))
+	time.sleep(1)
+
+# config_main = {"stats_used_game_mode": "Same", "amount_of_matches_for_player_stats": "10", "debug": False}
 
 OUTPUT_PATH = Path(__file__).parent
 ASSETS_PATH = OUTPUT_PATH / Path("./assets")
 
-DEBUG = bool(config_main["debug"])
+SAVE_DATA = False
 
 DATA_PATH = "data"
 if not os.path.exists(DATA_PATH):
@@ -219,6 +311,121 @@ class Logger:
 		return 1  # Success
 
 
+class FakeResponse:
+	"""Mimics a requests.Response object for debugging."""
+
+	def __init__(self, json_data, status_code=200):
+		self._json_data = json_data
+		self.status_code = status_code
+
+	def json(self):
+		return self._json_data
+
+	def text(self):
+		return dumps(self._json_data, indent=4)
+
+	def __enter__(self):
+		"""Allows use in 'with' statements."""
+		return self
+
+	def __exit__(self, exc_type, exc_value, traceback):
+		"""Ensures no errors occur when used in a 'with' statement."""
+		pass
+
+
+def generate_filename(method, url, params=None, data=None):
+	"""Generates a structured filename inside categorized folders."""
+
+	# Extract endpoint path (e.g., "/stats/player" -> "stats/player")
+	endpoint_path = url.replace("https://", "").strip("/")
+
+	# Replace special characters in folder names
+	safe_path = endpoint_path.replace("/", "_").replace(":", "_").replace("?", "_")  # Convert "stats/player" to "stats_player"
+
+	# Hash request details to ensure unique filenames
+	hash_input = f"{method}_{url}_{dumps(params, sort_keys=True)}_{dumps(data, sort_keys=True)}"
+	hashed = hashlib.md5(hash_input.encode()).hexdigest()
+
+	# Create directory for this request type
+	folder_path = os.path.join(DATA_PATH, safe_path)
+	os.makedirs(folder_path, exist_ok=True)
+
+	return os.path.join(folder_path, f"{hashed}.json")
+
+
+def get_rate_limit_wait_time(response):
+	"""Extracts wait time from rate limit headers if available."""
+	reset_time = response.headers.get("Retry-After")
+	if reset_time:
+		wait_time = int(reset_time)
+		return wait_time
+	return None  # No rate limit header found
+
+
+def handle_rate_limit(response, url, method="GET", headers=None, params=None, data=None, json=None, verify=None):
+	"""Handles rate limiting with exponential backoff and API headers."""
+	wait_time = get_rate_limit_wait_time(response)
+	if wait_time:
+		if DEBUG:
+			print(f"Rate limited! Retrying in {wait_time} seconds...")
+		time.sleep(wait_time)
+		return requests.request(method, url, params=params, json=json or data, headers=headers, verify=verify)
+
+	return response  # No rate limit header, fallback to exponential backoff
+
+
+def api_request(method, url, params=None, data=None, headers=None, json=None, verify=None):
+	"""Handles API requests and switches to debug mode if enabled."""
+
+	OVERRIDE_RESPONSES = {
+		"https://glz-na-1.na.a.pvp.net/core-game/": {"status": 404},  # Stop from connecting to the data core game
+		"https://glz-na-1.na.a.pvp.net/pregame/": {"status": 404},  # Stop from connecting to the data per game
+	}
+
+	requests.packages.urllib3.disable_warnings()  # noqa
+
+	"""if DEBUG:
+		file_path = generate_filename(method, url, params, data)
+		for base_url, response_data in OVERRIDE_RESPONSES.items():
+			if url.startswith(base_url):
+				return FakeResponse(response_data, response_data.get("status", 404))
+		# Load stored response
+		if os.path.exists(file_path):
+			with open(file_path, "r") as file:
+				response_data = load(file)
+			return FakeResponse(response_data)  # Return a fake response object
+		else:
+			print(f"No stored response for {url} - {method}")
+			return None"""
+
+	# If not in debug mode, make real API request
+	if data is None and json is not None:
+		data = json
+	response = requests.request(method, url, params=params, json=data, headers=headers, verify=verify)
+
+	if response.status_code == 200:
+		if SAVE_DATA:
+			response_data = response.json()
+			file_path = generate_filename(method, url, params, data)
+			save_response(file_path, response_data)  # Store for debugging
+		return response
+	elif response.status_code == 429:
+		return handle_rate_limit(response, url, method, headers, params, data, json, verify)
+	else:
+		if response.status_code != 404:
+			logger.log(2, f"API returned '{response.status_code}' from request '{response.url}'\nUsing params: '{str(params)}, Using data/json: {str(data) + ' // ' + str(json)}'\n")
+			if DEBUG:
+				print(f"API Error: {response.status_code}")
+		return response
+
+
+def save_response(file_path, data):
+	"""Saves the API response for future debugging."""
+	os.makedirs(DATA_PATH, exist_ok=True)
+	with open(file_path, "w") as file:
+		dump(data, file, indent=4)
+
+
 def convert_time(sec):
 	days = sec // (24 * 3600)
 	sec %= (24 * 3600)
@@ -262,7 +469,7 @@ def create_riot_auth_ssl_ctx() -> ssl.SSLContext:
 
 	with warnings.catch_warnings():
 		warnings.filterwarnings("ignore", category=DeprecationWarning)
-		ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1  # deprecated since 3.10
+		ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2  # deprecated since 3.10
 	ssl_ctx.set_alpn_protocols(["http/1.1"])
 	ssl_ctx.options |= 1 << 19  # SSL_OP_NO_ENCRYPT_THEN_MAC
 	ssl_ctx.options |= 1 << 14  # SSL_OP_NO_TICKET
@@ -283,36 +490,38 @@ def create_riot_auth_ssl_ctx() -> ssl.SSLContext:
 async def get_user_data_from_riot_client():
 	global password, port
 
-	# get lockfile password
-	file_path = os.getenv("localappdata")
 	try:
-		with open(f"{file_path}\\Riot Games\\Riot Client\\Config\\lockfile", "r") as f:
-			lockfile_data = f.read()
-	except:
-		print("Riot Client isn't logged into an account!\nRetrying!")
-	# Base 64 encode the password
-	password = b64encode(f"riot:{str(lockfile_data.split(':')[3])}".encode("ASCII")).decode()
-	# Get the port the WS is running on
-	port = str(lockfile_data.split(":")[2])
-	if password is not None:
-		# Make secure connection with the WS
-		conn = aiohttp.TCPConnector(ssl=create_riot_auth_ssl_ctx())
-		async with aiohttp.ClientSession(
-				connector=conn, raise_for_status=True
-		) as session:
+
+		# get lockfile password
+		file_path = os.getenv("localappdata")
+		try:
+			with open(f"{file_path}\\Riot Games\\Riot Client\\Config\\lockfile", "r") as f:
+				lockfile_data = f.read()
+		except:
+			print("Riot Client isn't logged into an account!\nRetrying!")
+		# Base 64 encode the password
+		password = b64encode(f"riot:{str(lockfile_data.split(':')[3])}".encode("ASCII")).decode()
+		# Get the port the WS is running on
+		port = str(lockfile_data.split(":")[2])
+		if password is not None:
+			# Make secure connection with the WS
 			# Get user login tokens
 			try:
-				async with session.get(
-						f"https://127.0.0.1:{port}/entitlements/v1/token",
-						headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, ssl=False
-				) as r:
-					return_data = await r.json()
-			except aiohttp.client.ClientResponseError:
+				with api_request("GET",
+				                 f"https://127.0.0.1:{port}/entitlements/v1/token",
+				                 headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False
+				                 ) as r:
+					return_data = r.json()
+			except Exception:
 				print("Please make sure Riot Client is open!")
 				return None
-		return return_data["accessToken"], return_data["token"], return_data["subject"]
-	else:
-		raise Exception("Riot Client Login Password Not Found!")
+			return return_data["accessToken"], return_data["token"], return_data["subject"]
+		else:
+			raise Exception("Riot Client Login Password Not Found!")
+	except Exception as e:
+		print(color_text("Please make sure you are logged into a Riot Account!", Fore.CYAN))
+		traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+		logger.log(1, f"Log In Failed!\nData: {return_data}\nTraceback: {traceback_str}")
 
 
 async def log_in() -> bool:
@@ -334,8 +543,8 @@ async def log_in() -> bool:
 def get_headers():
 	global internal_api_headers, internal_api_headers_console
 
-	with requests.get("https://valorant-api.com/v1/version") as r:
-		client_version = r.json()["data"]["riotClientVersion"]
+	r = api_request("GET", "https://valorant-api.com/v1/version")
+	client_version = r.json()["data"]["riotClientVersion"]
 
 	headers_pc = {
 		"X-Riot-Entitlements-JWT": f"{val_entitlements_token}",
@@ -355,252 +564,480 @@ def get_headers():
 	internal_api_headers_console = headers_console.copy()
 
 
-async def val_shop_checker():
-	print("Loading Shop...")
-	await log_in()
-	try:
-		get_headers()
+class ToolTip:
+	"""
+	Basic tooltip that appears on mouse hover.
+	Usage:
+		tooltip = ToolTip(widget, text="Some info")
+	"""
 
-		# Fetch player store data
-		response = requests.post(f"https://pd.na.a.pvp.net/store/v3/storefront/{val_uuid}",
-		                         headers=internal_api_headers, json={})
-		data = response.json()
+	def __init__(self, widget, text, bg="#2a2a2a", fg="white"):
+		self.widget = widget
+		self.text = text
+		self.tooltip_window = None
+		self.bg = bg
+		self.fg = fg
+		widget.bind("<Enter>", self.show_tooltip)
+		widget.bind("<Leave>", self.hide_tooltip)
 
-		with open(f"{DATA_PATH}/data.json", "w") as file:
-			dump(data, file, indent=4)
+	def show_tooltip(self, event=None):
+		if self.tooltip_window or not self.text:
+			return
+		x = self.widget.winfo_rootx() + 20
+		y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5
+		self.tooltip_window = tw = tkinter.Toplevel(self.widget)
+		tw.wm_overrideredirect(True)
+		tw.wm_geometry(f"+{x}+{y}")
 
-		GetPoints = requests.get(f"https://pd.na.a.pvp.net/store/v1/wallet/{val_uuid}", headers=internal_api_headers)
-		GetPoints_data = GetPoints.json()
+		label = tkinter.Label(
+			tw,
+			text=self.text,
+			justify="left",
+			background=self.bg,
+			foreground=self.fg,
+			relief="solid",
+			borderwidth=1,
+			font=("Helvetica", 9, "normal")
+		)
+		label.pack(ipadx=5, ipady=3)
 
-		vp = GetPoints_data["Balances"]["85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741"]
-		rp = GetPoints_data["Balances"]["e59aa87c-4cbf-517a-5983-6e81511be9b7"]
+	def hide_tooltip(self, event=None):
+		if self.tooltip_window:
+			self.tooltip_window.destroy()
+			self.tooltip_window = None
 
-		# Bundles handling
-		bundles_uuid = []
-		bundle_prices = []
-		featured_bundles = data.get('FeaturedBundle', {})
-		# time = convert_time(featured_bundles.get('BundleRemainingDurationInSeconds', 0))
 
-		if 'Bundles' in featured_bundles:
-			bundles = featured_bundles['Bundles']
-			for element in bundles:
-				bundle_uuid = element.get('DataAssetID', '')
-				bundles_uuid.append(bundle_uuid)
-				all_prices = [item.get('DiscountedPrice', 0) for item in element.get('Items', [])]
-				bundle_prices.append(sum(all_prices))
+class ValorantShopChecker:
+	def __init__(self):
+		self.val_uuid = val_uuid
+		self.data_path = "data"
+		self.internal_api_headers = internal_api_headers
+		self.logger = logger
+		self.dark_mode = True
 
-		# Skins handling
-		all_skin_uuids = []
-		singleweapons_prices = []
-		daily_shop = data.get("SkinsPanelLayout", {}).get("SingleItemStoreOffers", [])
-
-		for item in daily_shop:
-			all_skin_uuids.append(str(item.get("OfferID", '')))
-			singleweapons_prices.append(str(item.get("Cost", {}).get("85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741", 0)))
-
-		skin_names, skin_images, skin_videos = [], [], []
-		for item in all_skin_uuids:
-			skin_data = requests.get(f'https://valorant-api.com/v1/weapons/skinlevels/{item}').json()
-			skin_names.append(skin_data.get('data', {}).get('displayName', 'Unknown'))
-			skin_images.append(skin_data.get('data', {}).get('displayIcon', ''))
-			skin_videos.append(skin_data.get('data', {}).get('streamedVideo', ''))
-
-		# Bundles
-		bundles_images, current_bundles = [], []
-		for bundle in bundles_uuid:
-			bundle_data = requests.get(f'https://valorant-api.com/v1/bundles/{bundle}').json()
-			current_bundles.append(bundle_data.get('data', {}).get('displayName', 'Unknown'))
-			bundles_images.append(bundle_data.get('data', {}).get('displayIcon', ''))
-
-		# Night Market data
-		nm_price = []
-		nm_offers = []
-		nm_images = []
-		nm_skins_id = []
+	async def run(self):
+		print("Loading Shop...")
+		await log_in()
 		try:
-			for i in data['BonusStore']['BonusStoreOffers']:
-				[nm_price.append(k) for k in i['DiscountCosts'].values()]  # night market prices
-			for i in data['BonusStore']['BonusStoreOffers']:
-				[nm_skins_id.append(k['ItemID']) for k in i['Offer']['Rewards']]  # night market offers
-		except KeyError:
-			for i in range(6):
-				nm_skins_id.append('NONE')
-			for i in range(6):
-				nm_price.append('NONE')
+			get_headers()
 
-		for nmskinid in nm_skins_id:
-			with requests.get(f'https://valorant-api.com/v1/weapons/skinlevels/{nmskinid}') as r:
-				nmdata = r.json()
-			nm_offers.append(nmdata['data']['displayName'])  # names of daily items
-			nm_images.append(nmdata['data']['displayIcon'])  # images of daily items
+			# Fetch player store data
+			store_url = f"https://pd.na.a.pvp.net/store/v3/storefront/{self.val_uuid}"
+			response = api_request("POST", store_url, headers=self.internal_api_headers, data={})
+			store_data = response.json()
 
-		main_gui(vp, rp, current_bundles, bundles_images, bundle_prices, skin_names, skin_images, singleweapons_prices, nm_offers, nm_price, nm_images)
+			# Save raw data to file
+			with open(f"{self.data_path}/data.json", "w") as file:
+				dump(store_data, file, indent=4)
 
-	except Exception as e:
-		traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-		logger.log(1, traceback_str)
-		print(f"Error: {e}")
+			# Fetch wallet data
+			wallet_url = f"https://pd.na.a.pvp.net/store/v1/wallet/{self.val_uuid}"
+			wallet_response = api_request("GET", wallet_url, headers=self.internal_api_headers)
+			wallet_data = wallet_response.json()
 
+			# Extract wallet balances
+			vp = wallet_data["Balances"].get("85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741", 0)  # Valorant Points
+			vp_icon = "https://media.valorant-api.com/currencies/85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741/displayicon.png"
+			rp = wallet_data["Balances"].get("e59aa87c-4cbf-517a-5983-6e81511be9b7", 0)  # Radianite Points
+			rp_icon = "https://media.valorant-api.com/currencies/e59aa87c-4cbf-517a-5983-6e81511be9b7/displayicon.png"
+			kc = wallet_data["Balances"].get("85ca954a-41f2-ce94-9b45-8ca3dd39a00d", 0)  # Kingdom Credits
+			kc_icon = "https://media.valorant-api.com/currencies/85ca954a-41f2-ce94-9b45-8ca3dd39a00d/displayicon.png"
 
-def main_gui(vp, rp, current_bundles, bundles_images, bundle_prices, skin_names, skin_images, singleweapons_prices, nm_offers, nm_price, nm_images):
-	print("Loaded Shop\nDisplaying!")
-	root = Tk()
-	root.title("Valorant Shop Checker")
-	root.configure(bg="#121212")  # Improved dark background
+			# Process Bundles
+			bundles_uuid = []
+			bundle_prices = []
+			featured_bundles = store_data.get('FeaturedBundle', {})
+			if 'Bundles' in featured_bundles:
+				for bundle in featured_bundles['Bundles']:
+					bundle_uuid = bundle.get('DataAssetID', '')
+					bundles_uuid.append(bundle_uuid)
+					# Sum the discounted prices for each item in the bundle
+					item_prices = [item.get('DiscountedPrice', 0) for item in bundle.get('Items', [])]
+					bundle_prices.append(sum(item_prices))
+					bundle_duration = bundle.get("DurationRemainingInSeconds")
 
-	# Styling with ttk themes
-	style = ttk.Style()
-	style.configure("TFrame", background="#121212")
-	style.configure("TLabelframe", background="#121212", foreground="white", borderwidth=0)
-	style.configure("TLabel", background="#121212", foreground="white", font=("Helvetica", 12, "bold"))
+			# Process Skins from the daily shop
+			skin_ids = []
+			skin_prices = []
+			skins_panel = store_data.get("SkinsPanelLayout", {})
+			skin_duration = skins_panel.get("SingleItemOffersRemainingDurationInSeconds")
+			daily_shop_offers = skins_panel.get("SingleItemStoreOffers", [])
 
-	# Title Section
-	title = tkLabel(root, text="Valorant Shop Checker", font=("Helvetica", 24, "bold"), fg="white", bg="#121212")
-	title.pack(pady=10)
+			for offer in daily_shop_offers:
+				skin_id = str(offer.get("OfferID", ''))
+				skin_ids.append(skin_id)
+				cost = offer.get("Cost", {}).get("85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741", 0)
+				skin_prices.append(str(cost))
 
-	# Points Section
-	points_frame = ttk.Frame(root)
-	points_frame.pack(pady=5)
+			# Retrieve detailed skin info
+			skin_names, skin_images, skin_videos = [], [], []
+			for skin_id in skin_ids:
+				skin_response = api_request("GET", f"https://valorant-api.com/v1/weapons/skinlevels/{skin_id}")
+				skin_data = skin_response.json().get('data', {})
+				skin_names.append(skin_data.get('displayName', 'Unknown'))
+				skin_images.append(skin_data.get('displayIcon', ''))
+				skin_videos.append(skin_data.get('streamedVideo', ''))
 
-	vp_label = ttk.Label(points_frame, text=f"Valorant Points (VP): {vp}", font=("Helvetica", 14), style="TLabel")
-	vp_label.grid(row=0, column=0, padx=20)
+			# Retrieve bundle details (images and names)
+			bundles_images, current_bundles = [], []
+			for bundle in bundles_uuid:
+				bundle_response = api_request("GET", f"https://valorant-api.com/v1/bundles/{bundle}")
+				bundle_data = bundle_response.json().get('data', {})
+				current_bundles.append(bundle_data.get('displayName', 'Unknown'))
+				bundles_images.append(bundle_data.get('displayIcon', ''))
 
-	rp_label = ttk.Label(points_frame, text=f"Radianite Points (RP): {rp}", font=("Helvetica", 14), style="TLabel")
-	rp_label.grid(row=0, column=1, padx=20)
+			# Process Night Market data
+			nm_prices = []
+			nm_offers = []
+			nm_images = []
+			nm_skin_ids = []
 
-	# Main Scrollable Canvas
-	main_canvas = Canvas(root, bg="#121212", highlightthickness=0)
-	main_canvas.pack(fill="both", expand=True, pady=10, padx=10)
+			bonus_store: dict = store_data.get('BonusStore', {})
+			nm_duration: int = bonus_store.get('BonusStoreRemainingDurationInSeconds')
+			bonus_offers: list = bonus_store.get('BonusStoreOffers', [])
 
-	scrollbar = Scrollbar(root, orient="vertical", command=main_canvas.yview)
-	scrollbar.pack(side="right", fill="y")
-	main_canvas.configure(yscrollcommand=scrollbar.set)
+			for offer in bonus_offers:
+				# Append each discount cost
+				for cost in offer.get('DiscountCosts', {}).values():
+					nm_prices.append(cost)
+				# Append skin IDs from rewards
+				for reward in offer.get('Offer', {}).get('Rewards', []):
+					nm_skin_ids.append(reward.get('ItemID'))
 
-	content_frame = Frame(main_canvas, bg="#121212")
-	main_canvas.create_window((0, 0), window=content_frame, anchor="nw")
+			# Retrieve Night Market skin details
+			for skin_id in nm_skin_ids:
+				nm_response = api_request("GET", f"https://valorant-api.com/v1/weapons/skinlevels/{skin_id}")
+				nm_data = nm_response.json().get('data', {})
+				nm_offers.append(nm_data.get('displayName', 'Unknown'))
+				nm_images.append(nm_data.get('displayIcon', ''))
 
-	def on_frame_configure(event):
-		main_canvas.configure(scrollregion=main_canvas.bbox("all"))
+			# Display the GUI with the collected data
+			await self.display_gui(vp, vp_icon, rp, rp_icon, kc, kc_icon,
+			                       current_bundles, bundles_images, bundle_prices, bundle_duration,
+			                       skin_names, skin_images, skin_prices, skin_duration,
+			                       nm_offers, nm_prices, nm_images, nm_duration)
 
-	content_frame.bind("<Configure>", on_frame_configure)
+		except Exception as e:
+			error_trace = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+			self.logger.log(1, error_trace)
+			print(f"Error: {error_trace}")
 
-	# Helper function to resize images while keeping the aspect ratio
-	def resize_image(image, max_width, max_height):
-		original_width, original_height = image.size
-		ratio = min(max_width / original_width, max_height / original_height)
-		new_size = (int(original_width * ratio), int(original_height * ratio))
-		return image.resize(new_size, Image.Resampling.LANCZOS)
+	async def display_gui(
+			self,
+			vp, vp_icon, rp, rp_icon, kc, kc_icon,
+			current_bundles, bundles_images, bundle_prices, bundle_duration,
+			skin_names, skin_images, skin_prices, skin_duration,
+			nm_offers, nm_prices, nm_images, nm_duration
+	):
+		def format_duration(seconds):
+			days = seconds // (24 * 3600)
+			seconds %= (24 * 3600)
+			hours = seconds // 3600
+			seconds %= 3600
+			minutes = seconds // 60
+			seconds %= 60
+			return f"{days}d {hours}h {minutes}m {seconds}s"
 
-	# Bundles Section as banners
-	bundles_frame = ttk.LabelFrame(content_frame, text="Bundles", style="TLabelframe")
-	bundles_frame.pack(fill="x", pady=10, padx=20)
+		root = tkinter.Tk()
+		root.title("Valorant Shop Checker")
+		root.minsize(1024, 720)
 
-	if current_bundles:
-		for i, bundle in enumerate(current_bundles):
-			bundle_frame = Frame(bundles_frame, bg="#2a2a2a", highlightbackground="#ffffff", highlightthickness=2)
-			bundle_frame.pack(side="top", fill="x", padx=10, pady=10)
+		style = ttk.Style()
+		style.theme_use("clam")
 
-			bundle_image = Image.open(requests.get(bundles_images[i], stream=True).raw)
-			bundle_image = resize_image(bundle_image, 400, 150)  # Make the bundle image larger
-			img = ImageTk.PhotoImage(bundle_image)
+		# ================== THEME TOGGLE ==================
+		def switch_theme(lock: bool = False):
+			if not lock:
+				self.dark_mode = not self.dark_mode
 
-			img_label = tkLabel(bundle_frame, image=img, bg="#2a2a2a", bd=0, highlightthickness=0)
-			img_label.image = img
-			img_label.pack(pady=(10, 5))
+			if self.dark_mode:
+				# Dark Mode
+				root.configure(bg="#1E1E1E")
+				style.configure("TFrame", background="#1E1E1E")
+				style.configure("TLabel", background="#1E1E1E", foreground="#FFFFFF")
+				style.configure("Title.TLabel", font=("Helvetica", 28, "bold"),
+				                foreground="#FFFFFF", background="#1E1E1E")
+				style.configure("TLabelframe", background="#1E1E1E", borderwidth=0)
+				style.configure("TLabelframe.Label", background="#1E1E1E", foreground="#FFFFFF",
+				                font=("Helvetica", 13, "bold"))
+				style.configure("TButton", background="#333333", foreground="#FFFFFF",
+				                font=("Helvetica", 10, "bold"))
+				style.configure("Timer.TLabel", foreground="#CCCCCC", background="#1E1E1E",
+				                font=("Helvetica", 10, "italic"))
 
-			bundle_label = tkLabel(
-				bundle_frame,
-				text=bundle,
-				font=("Helvetica", 16, "bold"),
-				fg="white",
-				bg="#2a2a2a",
-				justify="center",
+				# Notebook Tabs
+				style.configure("TNotebook", background="#1E1E1E", borderwidth=0)
+				style.configure("TNotebook.Tab", background="#2A2A2A", foreground="#CCCCCC",
+				                borderwidth=0, padding=[10, 5])
+				style.map("TNotebook.Tab",
+				          background=[("selected", "#444444")],
+				          foreground=[("selected", "#FFFFFF")])
+
+			else:
+				# Light Mode
+				root.configure(bg="#f0f0f0")
+				style.configure("TFrame", background="#f0f0f0")
+				style.configure("TLabel", background="#f0f0f0", foreground="#1a1a1a")
+				style.configure("Title.TLabel", font=("Helvetica", 28, "bold"),
+				                foreground="#1a1a1a", background="#f0f0f0")
+				style.configure("TLabelframe", background="#f0f0f0", borderwidth=0)
+				style.configure("TLabelframe.Label", background="#f0f0f0", foreground="#1a1a1a",
+				                font=("Helvetica", 13, "bold"))
+				style.configure("TButton", background="#e0e0e0", foreground="#1a1a1a",
+				                font=("Helvetica", 10, "bold"))
+				style.configure("Timer.TLabel", foreground="#333", background="#f0f0f0",
+				                font=("Helvetica", 10, "italic"))
+
+				# Notebook Tabs
+				style.configure("TNotebook", background="#f0f0f0", borderwidth=0)
+				style.configure("TNotebook.Tab", background="#e0e0e0", foreground="#1a1a1a",
+				                borderwidth=0, padding=[10, 5])
+				style.map("TNotebook.Tab",
+				          background=[("selected", "#d0d0d0")],
+				          foreground=[("selected", "#000000")])
+
+		# Initialize theme
+		switch_theme(lock=True)
+
+		# ================== HEADER SECTION ==================
+		header_frame = ttk.Frame(root)
+		header_frame.pack(fill="x", pady=(20, 10), padx=20)
+
+		title_label = ttk.Label(header_frame, text="Valorant Shop Checker", style="Title.TLabel")
+		title_label.pack(side="left")
+
+		async def refresh():
+			print("Refresh clicked!")
+			await self.run()  # or whatever logic you have
+
+		refresh_btn = ttk.Button(header_frame, text="Refresh", command=lambda: asyncio.run(refresh()))
+		refresh_btn.pack(side="right", padx=5)
+
+		theme_btn = ttk.Button(header_frame, text="Toggle Theme", command=switch_theme)
+		theme_btn.pack(side="right", padx=5)
+
+		# ================== POINTS SECTION ==================
+		points_frame = ttk.Frame(root)
+		points_frame.pack(fill="x", pady=10, padx=20)
+
+		def create_points_section(frame, icon_url, amount):
+			# Icon
+			try:
+				icon_img = Image.open(requests.get(icon_url, stream=True).raw)
+				icon_img = icon_img.resize((32, 32), Image.Resampling.LANCZOS)
+				photo = ImageTk.PhotoImage(icon_img)
+				lbl_icon = ttk.Label(frame, image=photo)
+				lbl_icon.image = photo
+				lbl_icon.pack(side="left", padx=(0, 5))
+			except Exception as e:
+				print(f"Icon load error: {e}")
+				lbl_icon = ttk.Label(frame, text="Icon", width=4)
+				lbl_icon.pack(side="left", padx=(0, 5))
+
+			# Amount
+			ttk.Label(frame, text=str(amount), font=("Helvetica", 14)).pack(side="left", padx=(0, 20))
+
+		create_points_section(points_frame, vp_icon, vp)
+		create_points_section(points_frame, rp_icon, rp)
+		create_points_section(points_frame, kc_icon, kc)
+
+		# ================== NOTEBOOK (TABS) ==================
+		notebook = ttk.Notebook(root)
+		notebook.pack(fill="both", expand=True, padx=20, pady=10)
+
+		# Helper to resize images to a fixed size
+		def fixed_resize(image, width, height):
+			original_width, original_height = image.size
+			ratio = min(width / original_width, height / original_height)
+			new_size = (int(original_width * ratio), int(original_height * ratio))
+			return image.resize(new_size, Image.Resampling.LANCZOS)
+
+		def create_item_card(parent, image_url, title, price,
+		                     img_width, img_height,
+		                     card_bg="#2a2a2a", text_fg="white"):
+			"""
+			Creates a frame with an item image, name, and price.
+			Returns the frame so it can be placed in a grid.
+			"""
+			# We use a Frame (non-ttk) so we can color it if in dark mode.
+			card_frame = tkinter.Frame(parent, bg=card_bg, bd=1, relief="solid")
+
+			# Load image
+			try:
+				item_image = Image.open(requests.get(image_url, stream=True).raw)
+				# Force a fixed size for uniformity
+				if img_width != 0 and img_height != 0:
+					item_image = fixed_resize(item_image, img_width, img_height)
+				else:
+					item_image = fixed_resize(item_image, 250, 130)
+				img = ImageTk.PhotoImage(item_image)
+				img_label = tkinter.Label(card_frame, image=img, bg=card_bg)
+				img_label.image = img
+				img_label.pack(pady=(10, 5))
+			except Exception as e:
+				print(f"Image load error: {e}")
+				tkinter.Label(card_frame, text="Image not available", bg=card_bg, fg=text_fg).pack(pady=10)
+
+			# Title
+			tkinter.Label(card_frame, text=title, font=("Helvetica", 12, "bold"), fg=text_fg, bg=card_bg).pack()
+			# Price
+			tkinter.Label(card_frame, text=f"Price: {price} VP", font=("Helvetica", 10),
+			              fg=text_fg, bg=card_bg).pack(pady=(5, 10))
+
+			# Optional: add a tooltip for more details
+			ToolTip(card_frame, text=f"{title}\nPrice: {price} VP")
+
+			return card_frame
+
+		def create_tab(tab_name):
+			"""
+			Creates and returns a Frame that will be added as a tab to the notebook.
+			"""
+			frame = ttk.Frame(notebook)
+			notebook.add(frame, text=tab_name)
+			return frame
+
+		def create_section(parent_frame, title, items, images, prices, duration,
+		                   img_width, img_height):
+			"""
+			Creates a labeled frame with item cards in a grid.
+			Also places a timer label at the top-right.
+			Returns the label that displays the countdown and the total duration.
+			"""
+			section_frame = ttk.Labelframe(parent_frame, text=title)
+			section_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+			# Timer label
+			timer_frame = ttk.Frame(section_frame)
+			timer_frame.pack(fill="x", padx=10, pady=5)
+
+			timer_label = ttk.Label(timer_frame, text=f"Expires in: {format_duration(duration)}", style="Timer.TLabel")
+			timer_label.pack(side="left")
+
+			# Grid for items
+			items_frame = ttk.Frame(section_frame)
+			items_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+			num_columns = 4
+			num_items = len(items)
+			num_rows = (num_items + num_columns - 1) // num_columns
+
+			for row in range(num_rows):
+				# Determine how many items are in the current row.
+				row_count = min(num_columns, num_items - row * num_columns)
+				# Calculate offset to center items in this row.
+				offset = (num_columns - row_count) // 2
+				for col in range(row_count):
+					idx = row * num_columns + col
+
+					# Decide background color based on theme
+					card_bg = "#2a2a2a" if self.dark_mode else "#fafafa"
+					text_fg = "white" if self.dark_mode else "#1a1a1a"
+
+					card = create_item_card(
+						items_frame,
+						images[idx],
+						items[idx],
+						prices[idx],
+						img_width=img_width,
+						img_height=img_height,
+						card_bg=card_bg,
+						text_fg=text_fg
+					)
+					# Place the card in the grid with the offset.
+					card.grid(row=row, column=offset + col, padx=10, pady=10, sticky="nsew")
+
+			return timer_label, duration
+
+		# =============== Create Tabs and Sections ===============
+		# Bundles tab
+		bundles_tab = create_tab("Bundles")
+		bundles_timer_label = None
+		total_bundles_duration = bundle_duration
+		if current_bundles:
+			bundles_timer_label, total_bundles_duration = create_section(
+				bundles_tab,
+				"Bundles",
+				current_bundles,
+				bundles_images,
+				bundle_prices,
+				bundle_duration,
+				img_width=300,
+				img_height=140
 			)
-			bundle_label.pack()
 
-			price_label = tkLabel(
-				bundle_frame,
-				text=f"Price: {bundle_prices[i]} VP",
-				font=("Helvetica", 14, "bold"),
-				fg="white",
-				bg="#2a2a2a",
+		# Daily Skins tab
+		skins_tab = create_tab("Daily Skins")
+		skins_timer_label = None
+		total_skins_duration = skin_duration
+		if skin_names:
+			skins_timer_label, total_skins_duration = create_section(
+				skins_tab,
+				"Daily Skins",
+				skin_names,
+				skin_images,
+				skin_prices,
+				skin_duration,
+				img_width=0,
+				img_height=0
 			)
-			price_label.pack(pady=5)
 
-	# Daily Skins Section
-	skins_frame = ttk.LabelFrame(content_frame, text="Daily Skins", style="TLabelframe")
-	skins_frame.pack(fill="x", pady=10, padx=20)
-
-	for i, skin in enumerate(skin_names):
-		skin_frame = Frame(skins_frame, bg="#2a2a2a", highlightbackground="#ffffff", highlightthickness=2)
-		skin_frame.pack(side="left", padx=10, pady=10)
-
-		skin_image = Image.open(requests.get(skin_images[i], stream=True).raw)
-		skin_image = resize_image(skin_image, 200, 200)
-		img = ImageTk.PhotoImage(skin_image)
-
-		img_label = tkLabel(skin_frame, image=img, bg="#2a2a2a", bd=0, highlightthickness=0)
-		img_label.image = img
-		img_label.pack(pady=(10, 5))
-
-		skin_label = tkLabel(
-			skin_frame,
-			text=skin,
-			font=("Helvetica", 12, "bold"),
-			fg="white",
-			bg="#2a2a2a",
-			justify="center",
-		)
-		skin_label.pack()
-
-		price_label = tkLabel(
-			skin_frame,
-			text=f"Price: {singleweapons_prices[i]} VP",
-			font=("Helvetica", 10, "bold"),
-			fg="white",
-			bg="#2a2a2a",
-		)
-		price_label.pack(pady=5)
-
-	# Night Market Section
-	night_market_frame = ttk.LabelFrame(content_frame, text="Night Market", style="TLabelframe")
-	night_market_frame.pack(fill="x", pady=10, padx=20)
-
-	if nm_offers:
-		for i, offer in enumerate(nm_offers):
-			nm_frame = Frame(night_market_frame, bg="#2a2a2a", highlightbackground="#ffffff", highlightthickness=2)
-			nm_frame.pack(side="left", padx=10, pady=10)
-
-			nm_image = Image.open(requests.get(nm_images[i], stream=True).raw)
-			nm_image = resize_image(nm_image, 200, 200)
-			img = ImageTk.PhotoImage(nm_image)
-
-			img_label = tkLabel(nm_frame, image=img, bg="#2a2a2a", bd=0, highlightthickness=0)
-			img_label.image = img
-			img_label.pack(pady=(10, 5))
-
-			offer_label = tkLabel(
-				nm_frame,
-				text=offer,
-				font=("Helvetica", 12, "bold"),
-				fg="white",
-				bg="#2a2a2a",
-				justify="center",
+		# Night Market tab
+		nm_tab = create_tab("Night Market")
+		nm_timer_label = None
+		total_nm_duration = nm_duration if nm_duration else 0
+		if nm_offers:
+			nm_timer_label, total_nm_duration = create_section(
+				nm_tab,
+				"Night Market",
+				nm_offers,
+				nm_images,
+				nm_prices,
+				nm_duration,
+				img_width=300,
+				img_height=140
 			)
-			offer_label.pack()
+		else:
+			# If no NM offers, show a simple label
+			ttk.Label(nm_tab, text="Night Market is currently not available.").pack(pady=20)
 
-			price_label = tkLabel(
-				nm_frame,
-				text=f"Price: {nm_price[i]} VP",
-				font=("Helvetica", 10, "bold"),
-				fg="white",
-				bg="#2a2a2a",
-			)
-			price_label.pack(pady=5)
+		# =============== Timers Update Loop ===============
+		remaining_bundle = total_bundles_duration
+		remaining_skin = total_skins_duration
+		remaining_nm = total_nm_duration
 
-	root.update_idletasks()
-	root.geometry(f"{round(root.winfo_width() * 3.15)}x{round(root.winfo_height() * 2.25)}")
-	root.mainloop()
+		def update_timers():
+			nonlocal remaining_bundle, remaining_skin, remaining_nm
+
+			# Bundles
+			if current_bundles and bundles_timer_label:
+				if remaining_bundle > 0:
+					remaining_bundle -= 1
+					bundles_timer_label.config(text=f"Expires in: {format_duration(remaining_bundle)}")
+				else:
+					bundles_timer_label.config(text="Expired")
+
+			# Skins
+			if skin_names and skins_timer_label:
+				if remaining_skin > 0:
+					remaining_skin -= 1
+					skins_timer_label.config(text=f"Expires in: {format_duration(remaining_skin)}")
+				else:
+					skins_timer_label.config(text="Expired")
+
+			# Night Market
+			if nm_offers and nm_timer_label:
+				if remaining_nm > 0:
+					remaining_nm -= 1
+					nm_timer_label.config(text=f"Expires in: {format_duration(remaining_nm)}")
+				else:
+					nm_timer_label.config(text="Expired")
+
+			root.after(1000, update_timers)
+
+		update_timers()
+
+		root.mainloop()
 
 
 def calculate_kd(kills, deaths):
@@ -610,8 +1047,8 @@ def calculate_kd(kills, deaths):
 
 
 def get_userdata_from_id(user_id: str, host_player_uuid: str | None = None) -> tuple[str, bool]:
-	with requests.put(f"https://pd.na.a.pvp.net/name-service/v2/players",
-	                  headers=internal_api_headers, json=[user_id]) as req:
+	req = api_request("PUT", f"https://pd.na.a.pvp.net/name-service/v2/players", headers=internal_api_headers, data=[user_id])
+	if req.status_code == 200:
 		user_info = req.json()[0]
 		user_name = f"{user_info['GameName']}#{user_info['TagLine']}"
 		if host_player_uuid is not None:
@@ -622,22 +1059,25 @@ def get_userdata_from_id(user_id: str, host_player_uuid: str | None = None) -> t
 				host_player = user_name
 		else:
 			host_player = user_name
+	elif req.status_code == 429:
+		logger.log(2, "Rate Limited | get_userdata_from_id")
 
 	return host_player, False
 
 
 def get_agent_data_from_id(agent_id: str) -> str:
-	with requests.get(f"https://valorant-api.com/v1/agents/{agent_id}") as val_api:
-		agent_name = val_api.json()["data"]["displayName"]
+	r = api_request("GET", f"https://valorant-api.com/v1/agents/{agent_id}")
+	agent_name = r.json()["data"]["displayName"]
 	return agent_name
 
 
-def get_mapdata_from_id(map_id: str) -> str:
-	with requests.get(f"https://valorant-api.com/v1/maps") as val_api:
-		maps = val_api.json()["data"]
+def get_mapdata_from_id(map_id: str) -> str | None:
+	r = api_request("GET", f"https://valorant-api.com/v1/maps")
+	maps = r.json()["data"]
 	for map_data in maps:
 		if map_data["mapUrl"] == map_id:
 			return map_data['displayName']
+	return None
 
 
 def update_damage_stats(damage_dict, main_player, damage_info):
@@ -752,23 +1192,19 @@ def generate_match_report(match_stats: dict, host_player_uuid: str, only_host_pl
 
 def get_rank_from_uuid(user_id: str, platform: str = "PC"):
 	if platform == "PC":
-		with requests.get(f"https://pd.na.a.pvp.net/mmr/v1/players/{user_id}/competitiveupdates?queue=competitive",
-		                  headers=internal_api_headers) as r:
-			try:
-				rank_tier = r.json()["Matches"][0]["TierAfterUpdate"]
-			except:
-				return "Unranked"
+		r = api_request("GET", f"https://pd.na.a.pvp.net/mmr/v1/players/{user_id}/competitiveupdates?queue=competitive", headers=internal_api_headers)
+		try:
+			rank_tier = r.json()["Matches"][0]["TierAfterUpdate"]
+		except:
+			return "Unranked"
 	elif platform == "CONSOLE":
-		with requests.get(f"https://pd.na.a.pvp.net/mmr/v1/players/{user_id}/competitiveupdates?queue=console_competitive",
-		                  headers=internal_api_headers_console) as r:
-			try:
-				rank_tier = r.json()["Matches"][0]["TierAfterUpdate"]
-			except:
-				# If no comp match are played by the user
-				return "Unranked"
+		r = api_request("GET", f"https://pd.na.a.pvp.net/mmr/v1/players/{user_id}/competitiveupdates?queue=console_competitive", headers=internal_api_headers_console)
+		try:
+			rank_tier = r.json()["Matches"][0]["TierAfterUpdate"]
+		except:
+			# If no comp match are played by the user
+			return "Unranked"
 
-	with open(f"{DATA_PATH}/comp_data.json", "a") as file:
-		dump(r.json(), file, indent=4)
 	if str(rank_tier) == "0":
 		rank = "Unranked"
 	else:
@@ -800,7 +1236,6 @@ def get_rank_from_uuid(user_id: str, platform: str = "PC"):
 			27: "Radiant"
 		}
 		rank = rank_mapping.get(int(rank_tier), "Unknown Rank")
-	print(rank)
 	return rank
 
 
@@ -827,8 +1262,6 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC", ga
 	headshot = []
 	search = ""
 
-	session = create_session()
-
 	try:
 		stats_used_game_mode = config_main.get("stats_used_game_mode", "ALL").lower()
 		if stats_used_game_mode != "all":
@@ -845,20 +1278,30 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC", ga
 			url = f"https://pd.na.a.pvp.net/match-history/v1/history/{user_id}?endIndex={int(config_main.get('amount_of_matches_for_player_stats', '10'))}{search}"
 			headers = internal_api_headers_console
 
-		response = session.get(url, headers=headers)
+		response = api_request("GET", url, headers=headers)
+		# print(response.status_code)
 		if response.status_code == 429:
 			logger.log(2, "Rate Limited")
 			print("Rate Limited!")
-			time.sleep(10)
-			response = session.get(url, headers=headers)
+			while True:
+				time.sleep(10)
+				match_response = api_request("GET", url, headers=headers)
+				if match_response.status_code != 429:
+					break
 		history = response.json().get("History", [])
-		time.sleep(2.5)  # Delay to prevent rate limiting
+		time.sleep(5)  # Delay to prevent rate limiting
 
 		save_match_data = None
 		for i in history:
 			match_id = i["MatchID"]
 			match_url = f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}"
-			match_response = session.get(match_url, headers=headers)
+			match_response = api_request("GET", match_url, headers=headers)
+			if match_response.status_code == 429:
+				while True:
+					time.sleep(10)
+					match_response = api_request("GET", match_url, headers=headers)
+					if match_response.status_code != 429:
+						break
 
 			match_data = match_response.json()
 			player_data = match_data.get("players", [])
@@ -907,12 +1350,12 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC", ga
 
 def get_members_of_party_from_uuid(player_id: str):
 	player_list = []
-	with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(player_id)}", headers=internal_api_headers) as r:
+	with api_request("GET", f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(player_id)}", headers=internal_api_headers) as r:
 		try:
 			if r.status_code == 400:
 				is_console = str(r.json()["errorCode"]) == "PLAYER_PLATFORM_TYPE_MISMATCH"
 				if is_console:
-					with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(player_id)}", headers=internal_api_headers_console) as r2:
+					with api_request("GET", f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(player_id)}", headers=internal_api_headers_console) as r2:
 						party_id = r2.json()['CurrentPartyID']
 
 			else:
@@ -924,7 +1367,7 @@ def get_members_of_party_from_uuid(player_id: str):
 			print("Error Logged!")
 
 	if party_id is not None:
-		with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/parties/{party_id}", headers=internal_api_headers) as r:
+		with api_request("GET", f"https://glz-na-1.na.a.pvp.net/parties/v1/parties/{party_id}", headers=internal_api_headers) as r:
 			party_data = r.json()
 		for member in party_data["Members"]:
 			player_name = get_userdata_from_id(str(member["Subject"]))[0]
@@ -966,16 +1409,29 @@ def get_rank_color(rank: str):
 	return f"\033[90m[{rank}]{RESET}"  # No color, default text
 
 
-def get_user_current_state(puuid: str, presences_data: dict = None) -> int | tuple[int, str]:
+def get_user_current_state(puuid: str, presences_data: dict = None) -> int:
 	"""
-	:return: int: 1 = In Menus, 2 = In Menus Queueing, 3 = Pregame, 4 = In-Game, 5 = Other State, -1 = Error
-	if `return_match_id_also`, will return tuple with index 0 being int and 1 being the match_id
-	"""
+		This function takes a player uuid, Then it translates it the users current state.
+
+		Parameters:
+		puuid (str): The desired player's UUID.
+		presences_data *Optional* (dict|None):  The presence data of the user.
+
+		Returns:
+			int
+				-1: Error
+				0: Not in Valorant
+				1: In Menus
+				2: In Menus Queueing
+				3: Pregame
+				4: In-Game
+				5: Unknown State
+		"""
 	requests.packages.urllib3.disable_warnings()  # noqa
 	try:
 		if presences_data is None:
-			with requests.get(f"https://127.0.0.1:{port}/chat/v4/presences",
-			                  headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
+			with api_request("GET", f"https://127.0.0.1:{port}/chat/v4/presences",
+			                 headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
 				data = r.json()
 		else:
 			data = presences_data
@@ -983,6 +1439,10 @@ def get_user_current_state(puuid: str, presences_data: dict = None) -> int | tup
 		all_user_data = data["presences"]
 		for user in all_user_data:
 			if user["puuid"] == puuid:
+				# Check if the player is playing Valorant. If not, return 0
+				if str(user["product"]).lower() != "valorant":
+					return 0
+
 				encoded_user_data: str = user["private"]
 				decoded_user_data = loads(b64decode(encoded_user_data))
 				state = decoded_user_data["sessionLoopState"]
@@ -1008,11 +1468,12 @@ def get_user_current_state(puuid: str, presences_data: dict = None) -> int | tup
 
 def get_current_game_score(puuid: str) -> tuple[int, int]:
 	requests.packages.urllib3.disable_warnings()  # noqa
-	try:
+	all_user_data = "null"
+	decoded_user_data = "null"
 
-		with requests.get(f"https://127.0.0.1:{port}/chat/v4/presences",
-		                  headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
-			data = r.json()
+	try:
+		data = api_request("GET", f"https://127.0.0.1:{port}/chat/v4/presences",
+		                   headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False).json()
 
 		all_user_data = data["presences"]
 		for user in all_user_data:
@@ -1023,8 +1484,10 @@ def get_current_game_score(puuid: str) -> tuple[int, int]:
 				enemyTeamScore = decoded_user_data["partyOwnerMatchScoreEnemyTeam"]
 				return allyTeamScore, enemyTeamScore
 	except Exception as e:
+		print("Error (Score Finding) Logged!")
 		traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 		logger.log(1, traceback_str)
+	logger.log(1, f"Returning -1, -1 for current game score!\nData PUUID: {puuid}\n All_User_Data: {all_user_data}\nDecoded_User_Data: {decoded_user_data}")
 	return -1, -1
 
 
@@ -1060,15 +1523,15 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 	# Fetch match ID
 	while True:
 		try:
-			with requests.get(f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}", headers=internal_api_headers) as r:
-				if r.status_code != 404:
-					match_id = r.json()["MatchID"]
-					break
+			r = api_request("GET", f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}", headers=internal_api_headers)
+			if r.status_code != 404:
+				match_id = r.json()["MatchID"]
+				break
+			else:
+				if 3 <= get_user_current_state(str(val_uuid)) <= 4:
+					pass
 				else:
-					if 3 <= get_user_current_state(str(val_uuid)) <= 4:
-						pass
-					else:
-						return
+					return
 		except:
 			pass
 
@@ -1082,19 +1545,20 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 
 	def fetch_player_data(player_id, platform):
 		nonlocal partys, cache
-		party_data, cache = get_playerdata_from_uuid(player_id, cache, platform)
-		partys = add_parties(partys, party_data)
+		with request_semaphore:
+			party_data, cache = get_playerdata_from_uuid(player_id, cache, platform)
+			partys = add_parties(partys, party_data)
 		return None
 
 	while True:
 		buffer.truncate(0)
 		buffer.seek(0)
 		try:
-			with requests.get(f"https://glz-na-1.na.a.pvp.net/core-game/v1/matches/{match_id}",
-			                  headers=internal_api_headers) as r:
+			with api_request("GET", f"https://glz-na-1.na.a.pvp.net/core-game/v1/matches/{match_id}",
+			                 headers=internal_api_headers) as r:
 				if r.status_code == 400:
+					logger.log(2, f"Login may have expired! Re-logging in.\n Tried to get in-game match data. MATCH_ID -> {match_id}")
 					await log_in()
-					return None
 				elif r.status_code == 404:
 					return None
 				else:
@@ -1131,7 +1595,7 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 						if not is_level_hidden:
 							player_lvl = str(player["PlayerIdentity"]["AccountLevel"])
 						else:
-							player_lvl = "HIDDEN"
+							player_lvl = "--"
 
 						agent_name = get_agent_data_from_id(player['CharacterID'])
 
@@ -1213,8 +1677,8 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 				got_players = True
 
 				try:
-					with requests.get(f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}",
-					                  headers=internal_api_headers) as re_match_stats:
+					with api_request("GET", f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}",
+					                 headers=internal_api_headers) as re_match_stats:
 						match_stats = re_match_stats.json()
 
 					total_rounds = match_stats["teams"][0]["roundsPlayed"]
@@ -1298,16 +1762,17 @@ async def run_pregame(data: dict):
 
 	def fetch_player_data(player_id, platform):
 		nonlocal cache, partys
-		party_data, cache = get_playerdata_from_uuid(player_id, cache, platform)
-		partys = add_parties(partys, party_data)
+		with request_semaphore:
+			party_data, cache = get_playerdata_from_uuid(player_id, cache, platform)
+			partys = add_parties(partys, party_data)
 		return None
 
 	while True:
 		buffer.truncate(0)
 		buffer.seek(0)
 		try:
-			with requests.get(f"https://glz-na-1.na.a.pvp.net/pregame/v1/matches/{data['MatchID']}",
-			                  headers=internal_api_headers) as r:
+			with api_request("GET", f"https://glz-na-1.na.a.pvp.net/pregame/v1/matches/{data['MatchID']}",
+			                 headers=internal_api_headers) as r:
 				match_data = r.json()
 				with open(f"{DATA_PATH}/pre_match_data.json", "w") as f:
 					dump(match_data, f, indent=4)
@@ -1415,7 +1880,7 @@ async def run_pregame(data: dict):
 			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 			logger.log(1, traceback_str)
 			print("Error Logged!")
-
+	logger.log(3, "Loading pregame -> in-game")
 	await run_in_game(cache, partys)
 
 
@@ -1434,7 +1899,7 @@ async def toggle_ready_state(party_id: str, is_ready: bool):
 	data = {"ready": is_ready}
 
 	try:
-		response = requests.post(url, json=data, headers=headers)
+		response = api_request("POST", url, json=data, headers=headers)
 		if response.status_code == 200:
 			print(f"Ready state set to: {is_ready}")
 			return True
@@ -1449,15 +1914,15 @@ async def toggle_ready_state(party_id: str, is_ready: bool):
 def quit_game():
 	player_state = get_user_current_state(val_uuid)
 	if player_state == 3:
-		with requests.get(f"https://glz-na-1.na.a.pvp.net/pregame/v1/players/{val_uuid}", headers=internal_api_headers) as r:
+		with api_request("GET", f"https://glz-na-1.na.a.pvp.net/pregame/v1/players/{val_uuid}", headers=internal_api_headers) as r:
 			if r.status_code == 200:
 				match_id = r.json()["MatchID"]
-				requests.post(f"https://glz-na-1.na.a.pvp.net/pregame/v1/matches/{match_id}/quit", headers=internal_api_headers)
+				api_request("POST", f"https://glz-na-1.na.a.pvp.net/pregame/v1/matches/{match_id}/quit", headers=internal_api_headers)
 	elif player_state == 4:
-		with requests.get(f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}", headers=internal_api_headers) as r:
+		with api_request("GET", f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}", headers=internal_api_headers) as r:
 			if r.status_code == 200:
 				match_id = r.json()["MatchID"]
-				requests.post(f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}/disassociate/{match_id}", headers=internal_api_headers)
+				api_request("POST", f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}/disassociate/{match_id}", headers=internal_api_headers)
 
 
 async def listen_for_input(party_id: str):
@@ -1480,7 +1945,10 @@ async def listen_for_input(party_id: str):
 			elif "party" in user_input.lower():
 				clear_console()
 				print("Loading Party...")
+				logger.log(4, "Calling get_party from user input")
 				await get_party()
+			elif "store" in user_input.lower():
+				await ValorantShop.run()
 			elif "leave" in user_input.lower():
 				print("Leaving")
 				quit_game()
@@ -1497,8 +1965,8 @@ async def get_friend_states() -> list[str]:
 	requests.packages.urllib3.disable_warnings()  # noqa
 	friend_list = []
 	try:
-		with requests.get(f"https://127.0.0.1:{port}/chat/v4/presences",
-		                  headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
+		with api_request("GET", f"https://127.0.0.1:{port}/chat/v4/presences",
+		                 headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
 			data = r.json()
 		all_user_data = data["presences"]
 		for user in all_user_data:
@@ -1508,8 +1976,7 @@ async def get_friend_states() -> list[str]:
 					state_str = "In Menu" if state == 1 else "Queueing" if state == 2 else "Pre-game" if state == 3 else "In-game"
 					full_str = f"{user['game_name']}#{user['game_tag']}: {state_str}"
 					friend_list.append(full_str)
-	except Exception as e:
-		raise e
+	except Exception:
 		print("Please make sure Riot Client is open!")
 		return []
 
@@ -1523,6 +1990,8 @@ async def get_party(got_rank: dict = None):
 	last_rendered_content = ""
 	input_task = None  # Task for input handling
 	got_rank = got_rank or {}
+
+	logger.log(3, "Loading Party... ")
 
 	while True:
 		return_code = await check_if_user_in_pregame()
@@ -1555,6 +2024,7 @@ async def get_party(got_rank: dict = None):
 			else:
 				render_no_party_message(buffer, last_rendered_content)
 				await asyncio.sleep(3.5)
+				return -1
 		except KeyboardInterrupt:
 			sys.exit(1)
 		except Exception as e:
@@ -1563,11 +2033,11 @@ async def get_party(got_rank: dict = None):
 
 async def fetch_party_id():
 	"""Fetch the party ID for the current user."""
-	with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(val_uuid)}", headers=internal_api_headers) as r:
+	with api_request("GET", f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(val_uuid)}", headers=internal_api_headers) as r:
 		if r.status_code == 400:
 			is_console = str(r.json().get("errorCode")) == "PLAYER_PLATFORM_TYPE_MISMATCH"
 			if is_console:
-				with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(val_uuid)}", headers=internal_api_headers_console) as r2:
+				with api_request("GET", f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(val_uuid)}", headers=internal_api_headers_console) as r2:
 					return r2.json().get('CurrentPartyID')
 			else:
 				logger.log(1, "Error fetching party details.")
@@ -1580,8 +2050,8 @@ async def fetch_party_id():
 
 async def fetch_party_data(party_id):
 	"""Fetch the details of a party using its ID."""
-	with requests.get(f"https://glz-na-1.na.a.pvp.net/parties/v1/parties/{party_id}", headers=internal_api_headers) as r:
-		return r.json()
+	r = api_request("GET", f"https://glz-na-1.na.a.pvp.net/parties/v1/parties/{party_id}", headers=internal_api_headers)
+	return r.json()
 
 
 def parse_party_data(party_data, got_rank):
@@ -1637,49 +2107,51 @@ async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 		print("\n\nChecking if player is in match")
 
 	# Try pregame
-	with requests.get(f"https://glz-na-1.na.a.pvp.net/pregame/v1/players/{val_uuid}",
-	                  headers=internal_api_headers) as r:
+	r = api_request("GET", f"https://glz-na-1.na.a.pvp.net/pregame/v1/players/{val_uuid}",
+	                headers=internal_api_headers)
+	if r.status_code != 404:
 		data = r.json()
-	try:
-		# FIXME | Bad way of checking for pregame
-		if data["errorCode"] == "RESOURCE_NOT_FOUND":
-			pass
-	except KeyError:
 		if data["MatchID"]:
 			clear_console()
+			logger.log(3, "Loading check_pregame -> pregame")
 			await run_pregame(data)
 			return True
+	else:
+		# print("NOT IN PREGAME!")
+		time.sleep(1)
 
 	# Try playing in-game
-	with requests.get(f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}",
-	                  headers=internal_api_headers) as r:
-		try:
-			return_code = r.status_code
-			if return_code == 200:
-				clear_console()
-				await run_in_game()
-				return True
-			elif return_code == 400:
-				await log_in()
-			else:
-				return False
-		except Exception as e:
-			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-			logger.log(1, f"Error: {traceback_str}")
+	r = api_request("GET", f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}",
+	                headers=internal_api_headers)
+	try:
+		return_code = r.status_code
+		if return_code == 200:
+			clear_console()
+			logger.log(3, "Loading check_pregame -> in_game")
+			await run_in_game()
+			return True
+		elif return_code == 400:
+			logger.log(3, "Loading check_pregame -> log_in")
+			await log_in()
+		else:
+			return False
+	except Exception as e:
+		traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+		logger.log(1, f"Error: {traceback_str}")
 
 	return False
 
 
 def get_userdata_from_token() -> tuple[str, str]:
-	with requests.get("https://auth.riotgames.com/userinfo", headers={"Authorization": f"Bearer {val_access_token}"}) as r:
-		try:
-			account_name = r.json()["acct"]["game_name"]
-			account_tag = r.json()["acct"]["tag_line"]
-			return account_name, account_tag
-		except Exception as e:
-			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-			logger.log(3, f"Failed to get account name/tag: {traceback_str}")
-			return "None", "None"
+	r = api_request("GET", "https://auth.riotgames.com/userinfo", headers={"Authorization": f"Bearer {val_access_token}"})
+	try:
+		account_name = r.json()["acct"]["game_name"]
+		account_tag = r.json()["acct"]["tag_line"]
+		return account_name, account_tag
+	except Exception as e:
+		traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+		logger.log(3, f"Failed to get account name/tag: {traceback_str}")
+		return "None", "None"
 
 
 def main_display():
@@ -1718,6 +2190,7 @@ async def display_friend_states(friend_states: list) -> None:
 
 
 async def main() -> None:
+	global ValorantShop
 	clear_console()
 	main_display()
 	console.print("[yellow]One moment while we sign you in...[/yellow]\n")
@@ -1725,7 +2198,10 @@ async def main() -> None:
 	logged_in = await log_in()
 	if logged_in:
 		name, tag = get_userdata_from_token()
-		logger.log(3, f"Logged in as: {name}#{tag}")
+		logger.log(3, f"Using Version: {VERSION}\nLogged in as: {name}#{tag}")
+
+		ValorantShop = ValorantShopChecker()
+
 		while True:
 			try:
 				await display_logged_in_status(name)
@@ -1734,22 +2210,36 @@ async def main() -> None:
 				friend_states = await get_friend_states()
 				await display_friend_states(friend_states)
 
-				console.print("\n(1) Valorant Shop, (2) In-Game Loader\n")
-				user_input = input().strip()
-				if user_input == "1":
-					await val_shop_checker()
-				elif user_input == "2":
+				state = get_user_current_state(val_uuid)
+				if state != 3 and state != 4:
+					console.print("\n(1) Valorant Shop, (2) In-Game Loader\n")
+					user_input = input().strip()
+					if user_input == "1":
+						await ValorantShop.run()
+					elif user_input == "2":
+						while True:
+							logged_in = await log_in()
+							if logged_in:
+								await check_if_user_in_pregame()
+								logger.log(4, "Calling get_party from main")
+								if await get_party() == -1:
+									break
+							else:
+								time.sleep(2.5)
+								console.clear()
+					else:
+						console.print("[bold red]Invalid input. Please try again.[/bold red]")
+						time.sleep(1.5)
+				else:
 					while True:
 						logged_in = await log_in()
 						if logged_in:
 							await check_if_user_in_pregame()
+							logger.log(4, "Calling get_party from auto-main")
 							await get_party()
 						else:
 							time.sleep(2.5)
 							console.clear()
-				else:
-					console.print("[bold red]Invalid input. Please try again.[/bold red]")
-					time.sleep(1.5)
 			except KeyboardInterrupt:
 				console.print("[bold yellow]Exiting...[/bold yellow]")
 				return
@@ -1772,7 +2262,6 @@ if __name__ == "__main__":
 	logger = Logger("Valorant Zoro", "logs/ValorantZoro", ".log")
 	logger.load_public_key(pub_key)
 
-	console = Console()
 	while True:
 		try:
 			asyncio.run(main())
