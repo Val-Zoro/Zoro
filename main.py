@@ -1,4 +1,4 @@
-VERSION = "v2.3.5-DEV"
+VERSION = "v2.4.0-PUBLIC-BETA"
 
 import asyncio
 import threading
@@ -7,12 +7,12 @@ import os
 import configparser
 import traceback
 import sys
-import aiohttp
 import colorama
 import requests
 import ssl
 import hashlib
 import tkinter
+import tkinter.messagebox
 
 from json import dump, dumps, loads, load
 from platform import system, version
@@ -35,12 +35,14 @@ from rich.table import Table
 from rich.panel import Panel
 from rich import pretty
 
-from tkinter import ttk, Frame, Label, Button
+from tkinter import ttk, messagebox
 
 console = Console()
 pretty.install()
 
 DEBUG = False
+DEBUG_MODE = False
+SAVE_DATA = False
 
 val_token = ""
 val_access_token = ""
@@ -175,8 +177,6 @@ if DEBUG:
 
 OUTPUT_PATH = Path(__file__).parent
 ASSETS_PATH = OUTPUT_PATH / Path("./assets")
-
-SAVE_DATA = False
 
 DATA_PATH = "data"
 if not os.path.exists(DATA_PATH):
@@ -384,7 +384,7 @@ def api_request(method, url, params=None, data=None, headers=None, json=None, ve
 
 	requests.packages.urllib3.disable_warnings()  # noqa
 
-	"""if DEBUG:
+	if DEBUG_MODE:
 		file_path = generate_filename(method, url, params, data)
 		for base_url, response_data in OVERRIDE_RESPONSES.items():
 			if url.startswith(base_url):
@@ -396,7 +396,6 @@ def api_request(method, url, params=None, data=None, headers=None, json=None, ve
 			return FakeResponse(response_data)  # Return a fake response object
 		else:
 			print(f"No stored response for {url} - {method}")
-			return None"""
 
 	# If not in debug mode, make real API request
 	if data is None and json is not None:
@@ -607,6 +606,25 @@ class ToolTip:
 			self.tooltip_window = None
 
 
+image_cache = {}
+
+
+def load_image(url, size=None):
+	"""Load and optionally resize an image from a URL using caching."""
+	if url in image_cache:
+		img = image_cache[url]
+	else:
+		try:
+			img = Image.open(requests.get(url, stream=True).raw)
+			image_cache[url] = img
+		except Exception as e:
+			print(f"Error loading image from {url}: {e}")
+			return None
+	if size:
+		img = img.resize(size, Image.Resampling.LANCZOS)
+	return img
+
+
 class ValorantShopChecker:
 	def __init__(self):
 		self.val_uuid = val_uuid
@@ -616,106 +634,219 @@ class ValorantShopChecker:
 		self.dark_mode = True
 
 	async def run(self):
+		"""
+		Main method to load the shop data, process the API responses,
+		and display the GUI with the collected information.
+		"""
 		print("Loading Shop...")
 		await log_in()
-		try:
-			get_headers()
 
-			# Fetch player store data
+		try:
+			# -----------------------------------------------------------
+			# Set up API headers and fetch store data
+			# -----------------------------------------------------------
+			get_headers()
 			store_url = f"https://pd.na.a.pvp.net/store/v3/storefront/{self.val_uuid}"
 			response = api_request("POST", store_url, headers=self.internal_api_headers, data={})
 			store_data = response.json()
 
-			# Save raw data to file
+			# Save the raw store data to a file for debugging/auditing
 			with open(f"{self.data_path}/data.json", "w") as file:
 				dump(store_data, file, indent=4)
 
-			# Fetch wallet data
+			# -----------------------------------------------------------
+			# Fetch and extract wallet data
+			# -----------------------------------------------------------
 			wallet_url = f"https://pd.na.a.pvp.net/store/v1/wallet/{self.val_uuid}"
 			wallet_response = api_request("GET", wallet_url, headers=self.internal_api_headers)
 			wallet_data = wallet_response.json()
+			balances = wallet_data.get("Balances", {})
 
-			# Extract wallet balances
-			vp = wallet_data["Balances"].get("85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741", 0)  # Valorant Points
+			# Valorant Points, Radianite Points, Kingdom Credits and their icons
+			vp = balances.get("85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741", 0)
+			rp = balances.get("e59aa87c-4cbf-517a-5983-6e81511be9b7", 0)
+			kc = balances.get("85ca954a-41f2-ce94-9b45-8ca3dd39a00d", 0)
+
 			vp_icon = "https://media.valorant-api.com/currencies/85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741/displayicon.png"
-			rp = wallet_data["Balances"].get("e59aa87c-4cbf-517a-5983-6e81511be9b7", 0)  # Radianite Points
 			rp_icon = "https://media.valorant-api.com/currencies/e59aa87c-4cbf-517a-5983-6e81511be9b7/displayicon.png"
-			kc = wallet_data["Balances"].get("85ca954a-41f2-ce94-9b45-8ca3dd39a00d", 0)  # Kingdom Credits
 			kc_icon = "https://media.valorant-api.com/currencies/85ca954a-41f2-ce94-9b45-8ca3dd39a00d/displayicon.png"
 
-			# Process Bundles
+			# -----------------------------------------------------------
+			# Process Bundle Data
+			# -----------------------------------------------------------
 			bundles_uuid = []
 			bundle_prices = []
-			featured_bundles = store_data.get('FeaturedBundle', {})
-			if 'Bundles' in featured_bundles:
-				for bundle in featured_bundles['Bundles']:
+			bundle_items = {}
+			bundle_duration = None  # Default value if no bundles are found
+			featured_bundle = store_data.get('FeaturedBundle', {})
+
+			if 'Bundles' in featured_bundle:
+				for bundle in featured_bundle['Bundles']:
 					bundle_uuid = bundle.get('DataAssetID', '')
 					bundles_uuid.append(bundle_uuid)
-					# Sum the discounted prices for each item in the bundle
-					item_prices = [item.get('DiscountedPrice', 0) for item in bundle.get('Items', [])]
-					bundle_prices.append(sum(item_prices))
+
+					bundle_items[bundle_uuid] = []
+
+					# Calculate total discounted price from all items in the bundle
+					bundle_prices.append((bundle.get("TotalBaseCost", {"85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741": -1}).get("85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741", -1), bundle.get("TotalDiscountedCost", {"85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741": -1}).get("85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741", -1)))
+
+					# Get a reference list of all skins data
+					all_skins_response = api_request("GET", "https://valorant-api.com/v1/weapons/skins/")
+					all_skins_data = all_skins_response.json().get("data", [])
+
+					# Get all items in the bundle.
+					for itemOffer in bundle["ItemOffers"]:
+						is_skin = False
+
+						item_uuid = itemOffer["Offer"]["OfferID"]
+						item_type_uuid = itemOffer["Offer"]["Rewards"][0]["ItemTypeID"]
+						item_cost = itemOffer["Offer"]["Cost"]["85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741"]
+						# Check what item it is
+						# If Weapon Skin
+						if item_type_uuid == "e7c63390-eda7-46e0-bb7a-a6abdacd2433":
+							item_data = api_request("GET", f"https://valorant-api.com/v1/weapons/skinlevels/{item_uuid}").json()
+							is_skin = True
+						# If Buddy
+						elif item_type_uuid == "dd3bf334-87f3-40bd-b043-682a57a8dc3a":
+							item_data = api_request("GET", f"https://valorant-api.com/v1/buddies/levels/{item_uuid}").json()
+						# If Spray
+						elif item_type_uuid == "d5f120f8-ff8c-4aac-92ea-f2b5acbe9475":
+							item_data = api_request("GET", f"https://valorant-api.com/v1/sprays/{item_uuid}").json()
+						# If Player Card
+						elif item_type_uuid == "3f296c07-64c3-494c-923b-fe692a4fa1bd":
+							item_data = api_request("GET", f"https://valorant-api.com/v1/playercards/{item_uuid}").json()
+						# If Player Title
+						elif item_type_uuid == "de7caa6b-adf7-4588-bbd1-143831e786c6":
+							item_data = api_request("GET", f"https://valorant-api.com/v1/playertitles/{item_uuid}").json()
+						else:
+							item_data = {"data": {"displayName": None, "displayIcon": None}}
+						item_name = item_data["data"]["displayName"]
+						item_icon = item_data["data"]["displayIcon"]
+						skin_rarity = []
+						if is_skin:
+							for data in all_skins_data:
+								if data.get("displayName", "").lower() == item_name.lower():
+									tier_uuid = data.get("contentTierUuid", "")
+									if tier_uuid:
+										tier_response = api_request("GET", f"https://valorant-api.com/v1/contenttiers/{tier_uuid}")
+										tier_data = tier_response.json().get("data", {})
+										skin_rarity = [
+											tier_data.get("devName", ""),
+											tier_data.get("highlightColor", ""),
+											tier_data.get("displayIcon", "")
+										]
+										break
+
+						bundle_items[bundle_uuid].append((item_name, item_icon, item_cost, skin_rarity))
+
+					# Assuming all bundles share the same duration, take the last one
 					bundle_duration = bundle.get("DurationRemainingInSeconds")
 
-			# Process Skins from the daily shop
-			skin_ids = []
-			skin_prices = []
+			# -----------------------------------------------------------
+			# Process Daily Shop Skins Data
+			# -----------------------------------------------------------
 			skins_panel = store_data.get("SkinsPanelLayout", {})
 			skin_duration = skins_panel.get("SingleItemOffersRemainingDurationInSeconds")
 			daily_shop_offers = skins_panel.get("SingleItemStoreOffers", [])
 
+			skin_ids = []
+			skin_prices = []
 			for offer in daily_shop_offers:
 				skin_id = str(offer.get("OfferID", ''))
 				skin_ids.append(skin_id)
+
+				# Get cost from the wallet currency (Valorant Points)
 				cost = offer.get("Cost", {}).get("85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741", 0)
 				skin_prices.append(str(cost))
 
-			# Retrieve detailed skin info
-			skin_names, skin_images, skin_videos = [], [], []
+			# -----------------------------------------------------------
+			# Retrieve Detailed Skin Information
+			# -----------------------------------------------------------
+			skin_names = []
+			skin_images = []
+			skin_videos = []
+			skin_rarity = []
+
+			# Get a reference list of all skins data
+			all_skins_response = api_request("GET", "https://valorant-api.com/v1/weapons/skins/")
+			all_skins_data = all_skins_response.json().get("data", [])
+
 			for skin_id in skin_ids:
 				skin_response = api_request("GET", f"https://valorant-api.com/v1/weapons/skinlevels/{skin_id}")
 				skin_data = skin_response.json().get('data', {})
-				skin_names.append(skin_data.get('displayName', 'Unknown'))
+
+				name = skin_data.get('displayName', 'Unknown')
+				skin_names.append(name)
 				skin_images.append(skin_data.get('displayIcon', ''))
 				skin_videos.append(skin_data.get('streamedVideo', ''))
 
-			# Retrieve bundle details (images and names)
-			bundles_images, current_bundles = [], []
-			for bundle in bundles_uuid:
-				bundle_response = api_request("GET", f"https://valorant-api.com/v1/bundles/{bundle}")
+				# Determine skin rarity by matching the skin name in the reference data
+				rarity_found = False
+				for data in all_skins_data:
+					if data.get("displayName", "").lower() == name.lower():
+						tier_uuid = data.get("contentTierUuid", "")
+						if tier_uuid:
+							tier_response = api_request("GET", f"https://valorant-api.com/v1/contenttiers/{tier_uuid}")
+							tier_data = tier_response.json().get("data", {})
+							skin_rarity.append((
+								tier_data.get("devName", ""),
+								tier_data.get("highlightColor", ""),
+								tier_data.get("displayIcon", "")
+							))
+							rarity_found = True
+							break
+				if not rarity_found:
+					skin_rarity.append(("Unknown", "", ""))
+
+			# -----------------------------------------------------------
+			# Retrieve Bundle Details (Names and Images)
+			# -----------------------------------------------------------
+			current_bundles = []
+			bundles_images = []
+			for bundle_uuid in bundles_uuid:
+				bundle_response = api_request("GET", f"https://valorant-api.com/v1/bundles/{bundle_uuid}")
 				bundle_data = bundle_response.json().get('data', {})
-				current_bundles.append(bundle_data.get('displayName', 'Unknown'))
+				current_bundles.append((bundle_data.get('displayName', 'Unknown'), bundle_uuid))
 				bundles_images.append(bundle_data.get('displayIcon', ''))
 
-			# Process Night Market data
+			# -----------------------------------------------------------
+			# Process Night Market Data
+			# -----------------------------------------------------------
+			bonus_store = store_data.get('BonusStore', {})
+			nm_duration = bonus_store.get('BonusStoreRemainingDurationInSeconds')
+			bonus_offers = bonus_store.get('BonusStoreOffers', [])
+
 			nm_prices = []
-			nm_offers = []
-			nm_images = []
 			nm_skin_ids = []
-
-			bonus_store: dict = store_data.get('BonusStore', {})
-			nm_duration: int = bonus_store.get('BonusStoreRemainingDurationInSeconds')
-			bonus_offers: list = bonus_store.get('BonusStoreOffers', [])
-
 			for offer in bonus_offers:
-				# Append each discount cost
-				for cost in offer.get('DiscountCosts', {}).values():
-					nm_prices.append(cost)
-				# Append skin IDs from rewards
-				for reward in offer.get('Offer', {}).get('Rewards', []):
+				# Append discount costs from the offer
+				discount_costs = offer.get('DiscountCosts', {}).values()
+				nm_prices.extend(discount_costs)
+
+				# Append skin IDs from offer rewards
+				rewards = offer.get('Offer', {}).get('Rewards', [])
+				for reward in rewards:
 					nm_skin_ids.append(reward.get('ItemID'))
 
-			# Retrieve Night Market skin details
+			nm_offers = []
+			nm_images = []
 			for skin_id in nm_skin_ids:
 				nm_response = api_request("GET", f"https://valorant-api.com/v1/weapons/skinlevels/{skin_id}")
 				nm_data = nm_response.json().get('data', {})
 				nm_offers.append(nm_data.get('displayName', 'Unknown'))
 				nm_images.append(nm_data.get('displayIcon', ''))
 
+			# -----------------------------------------------------------
 			# Display the GUI with the collected data
-			await self.display_gui(vp, vp_icon, rp, rp_icon, kc, kc_icon,
-			                       current_bundles, bundles_images, bundle_prices, bundle_duration,
-			                       skin_names, skin_images, skin_prices, skin_duration,
-			                       nm_offers, nm_prices, nm_images, nm_duration)
+			# -----------------------------------------------------------
+			await self.display_gui(
+				vp, vp_icon,
+				rp, rp_icon,
+				kc, kc_icon,
+				current_bundles, bundles_images, bundle_prices, bundle_duration, bundle_items,
+				skin_names, skin_images, skin_prices, skin_duration, skin_rarity,
+				nm_offers, nm_prices, nm_images, nm_duration
+			)
 
 		except Exception as e:
 			error_trace = "".join(traceback.format_exception(type(e), e, e.__traceback__))
@@ -725,10 +856,27 @@ class ValorantShopChecker:
 	async def display_gui(
 			self,
 			vp, vp_icon, rp, rp_icon, kc, kc_icon,
-			current_bundles, bundles_images, bundle_prices, bundle_duration,
-			skin_names, skin_images, skin_prices, skin_duration,
+			current_bundles, bundles_images, bundle_prices, bundle_duration, bundle_items,
+			skin_names, skin_images, skin_prices, skin_duration, skin_rarity,
 			nm_offers, nm_prices, nm_images, nm_duration
 	):
+		# -------------------- Theme Colors & Fonts --------------------
+		DARK_BG = "#1E1E1E"
+		LIGHT_BG = "#f0f0f0"
+		DARK_CARD_BG = "#2a2a2a"
+		LIGHT_CARD_BG = "#fafafa"
+		ACCENT_COLOR = "#ffcc00"  # For badges and accents
+		TEXT_DARK = "#1a1a1a"
+		TEXT_LIGHT = "#FFFFFF"
+
+		TITLE_FONT = ("Helvetica", 32, "bold")
+		HEADER_FONT = ("Helvetica", 16, "bold")
+		LABEL_FONT = ("Helvetica", 12)
+		PRICE_FONT = ("Helvetica", 12, "bold")
+		BUTTON_FONT = ("Helvetica", 10, "bold")
+		TIMER_FONT = ("Helvetica", 10, "italic")
+
+		# -------------------- Utility Functions --------------------
 		def format_duration(seconds):
 			days = seconds // (24 * 3600)
 			seconds %= (24 * 3600)
@@ -738,219 +886,376 @@ class ValorantShopChecker:
 			seconds %= 60
 			return f"{days}d {hours}h {minutes}m {seconds}s"
 
-		root = tkinter.Tk()
-		root.title("Valorant Shop Checker")
-		root.minsize(1024, 720)
-
-		style = ttk.Style()
-		style.theme_use("clam")
-
-		# ================== THEME TOGGLE ==================
-		def switch_theme(lock: bool = False):
-			if not lock:
-				self.dark_mode = not self.dark_mode
-
-			if self.dark_mode:
-				# Dark Mode
-				root.configure(bg="#1E1E1E")
-				style.configure("TFrame", background="#1E1E1E")
-				style.configure("TLabel", background="#1E1E1E", foreground="#FFFFFF")
-				style.configure("Title.TLabel", font=("Helvetica", 28, "bold"),
-				                foreground="#FFFFFF", background="#1E1E1E")
-				style.configure("TLabelframe", background="#1E1E1E", borderwidth=0)
-				style.configure("TLabelframe.Label", background="#1E1E1E", foreground="#FFFFFF",
-				                font=("Helvetica", 13, "bold"))
-				style.configure("TButton", background="#333333", foreground="#FFFFFF",
-				                font=("Helvetica", 10, "bold"))
-				style.configure("Timer.TLabel", foreground="#CCCCCC", background="#1E1E1E",
-				                font=("Helvetica", 10, "italic"))
-
-				# Notebook Tabs
-				style.configure("TNotebook", background="#1E1E1E", borderwidth=0)
-				style.configure("TNotebook.Tab", background="#2A2A2A", foreground="#CCCCCC",
-				                borderwidth=0, padding=[10, 5])
-				style.map("TNotebook.Tab",
-				          background=[("selected", "#444444")],
-				          foreground=[("selected", "#FFFFFF")])
-
-			else:
-				# Light Mode
-				root.configure(bg="#f0f0f0")
-				style.configure("TFrame", background="#f0f0f0")
-				style.configure("TLabel", background="#f0f0f0", foreground="#1a1a1a")
-				style.configure("Title.TLabel", font=("Helvetica", 28, "bold"),
-				                foreground="#1a1a1a", background="#f0f0f0")
-				style.configure("TLabelframe", background="#f0f0f0", borderwidth=0)
-				style.configure("TLabelframe.Label", background="#f0f0f0", foreground="#1a1a1a",
-				                font=("Helvetica", 13, "bold"))
-				style.configure("TButton", background="#e0e0e0", foreground="#1a1a1a",
-				                font=("Helvetica", 10, "bold"))
-				style.configure("Timer.TLabel", foreground="#333", background="#f0f0f0",
-				                font=("Helvetica", 10, "italic"))
-
-				# Notebook Tabs
-				style.configure("TNotebook", background="#f0f0f0", borderwidth=0)
-				style.configure("TNotebook.Tab", background="#e0e0e0", foreground="#1a1a1a",
-				                borderwidth=0, padding=[10, 5])
-				style.map("TNotebook.Tab",
-				          background=[("selected", "#d0d0d0")],
-				          foreground=[("selected", "#000000")])
-
-		# Initialize theme
-		switch_theme(lock=True)
-
-		# ================== HEADER SECTION ==================
-		header_frame = ttk.Frame(root)
-		header_frame.pack(fill="x", pady=(20, 10), padx=20)
-
-		title_label = ttk.Label(header_frame, text="Valorant Shop Checker", style="Title.TLabel")
-		title_label.pack(side="left")
-
-		async def refresh():
-			print("Refresh clicked!")
-			await self.run()  # or whatever logic you have
-
-		refresh_btn = ttk.Button(header_frame, text="Refresh", command=lambda: asyncio.run(refresh()))
-		refresh_btn.pack(side="right", padx=5)
-
-		theme_btn = ttk.Button(header_frame, text="Toggle Theme", command=switch_theme)
-		theme_btn.pack(side="right", padx=5)
-
-		# ================== POINTS SECTION ==================
-		points_frame = ttk.Frame(root)
-		points_frame.pack(fill="x", pady=10, padx=20)
-
-		def create_points_section(frame, icon_url, amount):
-			# Icon
-			try:
-				icon_img = Image.open(requests.get(icon_url, stream=True).raw)
-				icon_img = icon_img.resize((32, 32), Image.Resampling.LANCZOS)
-				photo = ImageTk.PhotoImage(icon_img)
-				lbl_icon = ttk.Label(frame, image=photo)
-				lbl_icon.image = photo
-				lbl_icon.pack(side="left", padx=(0, 5))
-			except Exception as e:
-				print(f"Icon load error: {e}")
-				lbl_icon = ttk.Label(frame, text="Icon", width=4)
-				lbl_icon.pack(side="left", padx=(0, 5))
-
-			# Amount
-			ttk.Label(frame, text=str(amount), font=("Helvetica", 14)).pack(side="left", padx=(0, 20))
-
-		create_points_section(points_frame, vp_icon, vp)
-		create_points_section(points_frame, rp_icon, rp)
-		create_points_section(points_frame, kc_icon, kc)
-
-		# ================== NOTEBOOK (TABS) ==================
-		notebook = ttk.Notebook(root)
-		notebook.pack(fill="both", expand=True, padx=20, pady=10)
-
-		# Helper to resize images to a fixed size
 		def fixed_resize(image, width, height):
 			original_width, original_height = image.size
 			ratio = min(width / original_width, height / original_height)
 			new_size = (int(original_width * ratio), int(original_height * ratio))
 			return image.resize(new_size, Image.Resampling.LANCZOS)
 
-		def create_item_card(parent, image_url, title, price,
-		                     img_width, img_height,
-		                     card_bg="#2a2a2a", text_fg="white"):
-			"""
-			Creates a frame with an item image, name, and price.
-			Returns the frame so it can be placed in a grid.
-			"""
-			# We use a Frame (non-ttk) so we can color it if in dark mode.
-			card_frame = tkinter.Frame(parent, bg=card_bg, bd=1, relief="solid")
+		# -------------------- Setup Root & Style --------------------
+		root = tkinter.Tk()
+		root.title("Valorant Shop Checker")
+		root.minsize(1024, 720)
+		root.configure(bg=DARK_BG if self.dark_mode else LIGHT_BG)
+		style = ttk.Style()
+		style.theme_use("clam")
 
-			# Load image
-			try:
-				item_image = Image.open(requests.get(image_url, stream=True).raw)
-				# Force a fixed size for uniformity
-				if img_width != 0 and img_height != 0:
-					item_image = fixed_resize(item_image, img_width, img_height)
+		# Configure overall padding and grid weight for responsiveness.
+		root.grid_rowconfigure(0, weight=1)
+		root.grid_columnconfigure(0, weight=1)
+
+		# -------------------- Load Theme Icons --------------------
+		sun_icon_url = "https://raw.githubusercontent.com/Saucywan/IconAssets/71ca8de7336c6a03ad319cabd9580b8e83fe6e3c/sun.png"
+		moon_icon_url = "https://raw.githubusercontent.com/Saucywan/IconAssets/71ca8de7336c6a03ad319cabd9580b8e83fe6e3c/moon.png"
+		sun_icon = moon_icon = None
+		for url, var in [(sun_icon_url, "sun_icon"), (moon_icon_url, "moon_icon")]:
+			img = load_image(url, (24, 24))
+			if img:
+				if url == sun_icon_url:
+					sun_icon = ImageTk.PhotoImage(img)
 				else:
-					item_image = fixed_resize(item_image, 250, 130)
-				img = ImageTk.PhotoImage(item_image)
-				img_label = tkinter.Label(card_frame, image=img, bg=card_bg)
-				img_label.image = img
-				img_label.pack(pady=(10, 5))
+					moon_icon = ImageTk.PhotoImage(img)
+
+		# -------------------- Global Card List for Theme Updates --------------------
+		cards = []
+		theme_btn = None  # Placeholder for theme toggle button
+
+		# -------------------- Hover Effects for Cards --------------------
+		def add_hover_effect(widget, normal_bg, hover_bg):
+			def on_enter(event):
+				widget.configure(bg=hover_bg)
+				for child in widget.winfo_children():
+					try:
+						child.configure(bg=hover_bg)
+					except Exception:
+						pass
+
+			def on_leave(event):
+				widget.configure(bg=normal_bg)
+				for child in widget.winfo_children():
+					try:
+						child.configure(bg=normal_bg)
+					except Exception:
+						pass
+
+			widget.bind("<Enter>", on_enter)
+			widget.bind("<Leave>", on_leave)
+
+		# -------------------- Theme Toggle Function --------------------
+		def switch_theme(lock: bool = False):
+			nonlocal theme_btn
+			if not lock:
+				self.dark_mode = not self.dark_mode
+
+			if self.dark_mode:
+				# Dark Mode configuration
+				root.configure(bg=DARK_BG)
+				style.configure("TFrame", background=DARK_BG)
+				style.configure("TLabel", background=DARK_BG, foreground=TEXT_LIGHT, font=LABEL_FONT)
+				style.configure("Title.TLabel", font=TITLE_FONT, foreground=TEXT_LIGHT, background=DARK_BG)
+				style.configure("TLabelframe", background=DARK_BG, borderwidth=0)
+				style.configure("TLabelframe.Label", background=DARK_BG, foreground=TEXT_LIGHT, font=HEADER_FONT)
+				style.configure("TButton", background=DARK_CARD_BG, foreground=TEXT_LIGHT, font=BUTTON_FONT)
+				style.configure("Timer.TLabel", foreground="#CCCCCC", background=DARK_BG, font=TIMER_FONT)
+				style.configure("TNotebook", background=DARK_BG, borderwidth=0)
+				style.configure("TNotebook.Tab", background=DARK_CARD_BG, foreground="#CCCCCC", borderwidth=0, padding=[10, 5])
+				style.map("TNotebook.Tab", background=[("selected", "#444444")], foreground=[("selected", TEXT_LIGHT)])
+			else:
+				# Light Mode configuration
+				root.configure(bg=LIGHT_BG)
+				style.configure("TFrame", background=LIGHT_BG)
+				style.configure("TLabel", background=LIGHT_BG, foreground=TEXT_DARK, font=LABEL_FONT)
+				style.configure("Title.TLabel", font=TITLE_FONT, foreground=TEXT_DARK, background=LIGHT_BG)
+				style.configure("TLabelframe", background=LIGHT_BG, borderwidth=0)
+				style.configure("TLabelframe.Label", background=LIGHT_BG, foreground=TEXT_DARK, font=HEADER_FONT)
+				style.configure("TButton", background="#e0e0e0", foreground=TEXT_DARK, font=BUTTON_FONT)
+				style.configure("Timer.TLabel", foreground="#333", background=LIGHT_BG, font=TIMER_FONT)
+				style.configure("TNotebook", background=LIGHT_BG, borderwidth=0)
+				style.configure("TNotebook.Tab", background="#e0e0e0", foreground=TEXT_DARK, borderwidth=0, padding=[10, 5])
+				style.map("TNotebook.Tab", background=[("selected", "#d0d0d0")], foreground=[("selected", "#000000")])
+
+			# Update all card backgrounds and child widget colors
+			new_card_bg = DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG
+			new_text_fg = TEXT_LIGHT if self.dark_mode else TEXT_DARK
+			for card in cards:
+				card.configure(bg=new_card_bg)
+				for child in card.winfo_children():
+					try:
+						child.configure(bg=new_card_bg)
+						if isinstance(child, tkinter.Label):
+							child.configure(fg=new_text_fg)
+					except Exception:
+						pass
+
+			# Update theme toggle button icon if loaded
+			if theme_btn is not None and sun_icon and moon_icon:
+				if self.dark_mode:
+					theme_btn.config(image=sun_icon)
+					theme_btn.image = sun_icon
+				else:
+					theme_btn.config(image=moon_icon)
+					theme_btn.image = moon_icon
+
+		# -------------------- HEADER SECTION --------------------
+		header_frame = ttk.Frame(root)
+		header_frame.pack(fill="x", pady=(20, 10), padx=20)
+
+		title_label = ttk.Label(header_frame, text="Valorant Shop Checker", style="Title.TLabel")
+		title_label.pack(side="left", padx=(0, 20))
+
+		async def refresh():
+			print("Refresh clicked!")
+			refresh_btn.config(text="Refreshing...", state="disabled")
+			await self.run()
+			refresh_btn.config(text="Refresh", state="normal")
+
+		refresh_btn = ttk.Button(header_frame, text="Refresh", command=lambda: asyncio.run(refresh()))
+		refresh_btn.pack(side="right", padx=5)
+
+		theme_btn = ttk.Button(header_frame, command=switch_theme)
+		theme_btn.pack(side="right", padx=5)
+
+		# Initialize theme (lock mode to set initial colors without toggling)
+		switch_theme(lock=True)
+
+		# -------------------- POINTS SECTION --------------------
+		points_frame = ttk.Frame(root)
+		points_frame.pack(fill="x", pady=10, padx=20)
+
+		def create_points_section(frame, icon_url, amount):
+			try:
+				icon_img = load_image(icon_url, (32, 32))
+				if icon_img:
+					photo = ImageTk.PhotoImage(icon_img)
+					lbl_icon = ttk.Label(frame, image=photo)
+					lbl_icon.image = photo
+					lbl_icon.pack(side="left", padx=(0, 5))
+				else:
+					raise Exception("No image")
+			except Exception as e:
+				print(f"Icon load error: {e}")
+				ttk.Label(frame, text="Icon", width=4).pack(side="left", padx=(0, 5))
+			ttk.Label(frame, text=str(amount), font=("Helvetica", 14)).pack(side="left", padx=(0, 20))
+
+		create_points_section(points_frame, vp_icon, vp)
+		create_points_section(points_frame, rp_icon, rp)
+		create_points_section(points_frame, kc_icon, kc)
+
+		# -------------------- NOTEBOOK (TABS) --------------------
+		notebook = ttk.Notebook(root)
+		notebook.pack(fill="both", expand=True, padx=20, pady=10)
+
+		# -------------------- BUNDLE DETAILS POPUP FUNCTION --------------------
+		def show_bundle_details(bundle_uuid, bundle_name):
+			items = bundle_items.get(bundle_uuid)
+			if not items:
+				messagebox.showerror("Error", "No details available for this bundle.")
+				return
+
+			details_window = tkinter.Toplevel(root)
+			details_window.title(f"Bundle Details - {bundle_name}")
+			details_window.minsize(500, 400)
+
+			canvas = tkinter.Canvas(details_window, bg=DARK_BG if self.dark_mode else LIGHT_BG)
+			scrollbar = ttk.Scrollbar(details_window, orient="vertical", command=canvas.yview)
+			scrollable_frame = ttk.Frame(canvas)
+
+			scrollable_frame.bind(
+				"<Configure>",
+				lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+			)
+
+			canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+			canvas.configure(yscrollcommand=scrollbar.set)
+
+			canvas.pack(side="left", fill="both", expand=True)
+			scrollbar.pack(side="right", fill="y")
+
+			for item in items:
+				item_name, item_icon_url, item_cost, item_rarity = item
+				card_bg = DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG
+				item_frame = tkinter.Frame(scrollable_frame, bg=card_bg, bd=1, relief="solid")
+				item_frame.pack(padx=10, pady=10, fill="x")
+
+				try:
+					icon_img = load_image(item_icon_url, (50, 50))
+					if icon_img:
+						icon_img = fixed_resize(icon_img, 50, 50)
+						icon_photo = ImageTk.PhotoImage(icon_img)
+						icon_label = tkinter.Label(item_frame, image=icon_photo, bg=card_bg)
+						icon_label.image = icon_photo
+						icon_label.pack(side="left", padx=10, pady=10)
+					else:
+						raise Exception("No icon")
+				except Exception:
+					tkinter.Label(item_frame, text="No Icon", bg=card_bg).pack(side="left", padx=10, pady=10)
+
+				details_frame = tkinter.Frame(item_frame, bg=card_bg)
+				details_frame.pack(side="left", fill="x", expand=True)
+
+				tkinter.Label(details_frame, text=item_name, font=("Helvetica", 12, "bold"),
+				              bg=card_bg, fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
+				tkinter.Label(details_frame, text=f"Cost: {item_cost} VP", font=("Helvetica", 10),
+				              bg=card_bg, fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
+
+				if item_rarity and len(item_rarity) >= 3:
+					rarity_name, highlight_color, display_icon_url = item_rarity
+					if len(highlight_color) != 6:
+						highlight_color = "#" + highlight_color[0:-2]
+					rarity_frame = tkinter.Frame(details_frame, bg=highlight_color)
+					rarity_frame.pack(anchor="w", pady=(5, 0))
+					try:
+						rarity_img = load_image(display_icon_url, (16, 16))
+						if rarity_img:
+							rarity_img = rarity_img.resize((16, 16), Image.Resampling.LANCZOS)
+							rarity_photo = ImageTk.PhotoImage(rarity_img)
+							rarity_icon_label = tkinter.Label(rarity_frame, image=rarity_photo, bg=highlight_color)
+							rarity_icon_label.image = rarity_photo
+							rarity_icon_label.pack(side="left", padx=(0, 2))
+					except Exception as e:
+						print("Error loading rarity icon in popup:", e)
+					tkinter.Label(rarity_frame, text=rarity_name, font=("Helvetica", 8, "bold"),
+					              bg=highlight_color, fg="white").pack(side="left", padx=(0, 2))
+
+		# -------------------- ITEM CARD CREATION FUNCTION --------------------
+		def create_item_card(parent, image_url, title, price, img_width, img_height,
+		                     card_bg, text_fg, rarity=None,
+		                     is_bundle=False, bundle_uuid=None, bundle_name=None):
+			if is_bundle:
+				card_frame = tkinter.Frame(parent, bg=card_bg, bd=0)
+				card_frame.configure(highlightthickness=1, highlightbackground="#CCCCCC", padx=10, pady=10)
+			else:
+				card_frame = tkinter.Frame(parent, bg=card_bg, bd=1, relief="solid")
+			cards.append(card_frame)
+
+			# Add hover effect for interactive feel
+			add_hover_effect(card_frame, card_bg, ACCENT_COLOR)
+
+			# For bundles, add a “BUNDLE” badge.
+			if is_bundle:
+				badge_frame = tkinter.Frame(card_frame, bg=card_bg)
+				badge_frame.pack(anchor="nw", padx=5, pady=5)
+				badge = tkinter.Label(badge_frame, text="BUNDLE", bg=ACCENT_COLOR, fg=TEXT_DARK,
+				                      font=("Helvetica", 8, "bold"))
+				badge.pack()
+
+			if rarity:
+				rarity_name, highlight_color, display_icon_url = rarity
+				if len(highlight_color) != 6:
+					highlight_color = "#" + highlight_color[0:-2]
+				rarity_frame = tkinter.Frame(card_frame, bg=highlight_color)
+				rarity_frame.pack(anchor="ne", padx=5, pady=5)
+				try:
+					rarity_img = load_image(display_icon_url, (16, 16))
+					if rarity_img:
+						rarity_img = rarity_img.resize((16, 16), Image.Resampling.LANCZOS)
+						rarity_photo = ImageTk.PhotoImage(rarity_img)
+						rarity_icon_label = tkinter.Label(rarity_frame, image=rarity_photo, bg=highlight_color)
+						rarity_icon_label.image = rarity_photo
+						rarity_icon_label.pack(side="left", padx=(0, 2))
+				except Exception as e:
+					print("Error loading rarity icon:", e)
+				tkinter.Label(rarity_frame, text=rarity_name, bg=highlight_color, fg="white",
+				              font=("Helvetica", 8, "bold")).pack(side="left")
+
+			try:
+				item_image = load_image(image_url)
+				if item_image:
+					if img_width and img_height:
+						item_image = fixed_resize(item_image, img_width, img_height)
+					else:
+						item_image = fixed_resize(item_image, 250, 130)
+					img = ImageTk.PhotoImage(item_image)
+					img_label = tkinter.Label(card_frame, image=img, bg=card_bg)
+					img_label.image = img
+					img_label.pack(pady=(15, 5))
+				else:
+					raise Exception("Image not available")
 			except Exception as e:
 				print(f"Image load error: {e}")
 				tkinter.Label(card_frame, text="Image not available", bg=card_bg, fg=text_fg).pack(pady=10)
 
-			# Title
-			tkinter.Label(card_frame, text=title, font=("Helvetica", 12, "bold"), fg=text_fg, bg=card_bg).pack()
-			# Price
-			tkinter.Label(card_frame, text=f"Price: {price} VP", font=("Helvetica", 10),
-			              fg=text_fg, bg=card_bg).pack(pady=(5, 10))
+			tkinter.Label(card_frame, text=title, font=("Helvetica", 12, "bold"), fg=text_fg, bg=card_bg).pack(pady=(5, 0))
+			if is_bundle:
+				base_price, discount_price = price
+				price_frame = tkinter.Frame(card_frame, bg=card_bg)
+				price_frame.pack(pady=(5, 10))
+				tkinter.Label(price_frame, text=f"{base_price} VP", font=("Helvetica", 10, "overstrike"),
+				              fg="red", bg=card_bg).pack(side="left", padx=(0, 5))
+				tkinter.Label(price_frame, text=f"{discount_price} VP", font=("Helvetica", 12, "bold"),
+				              fg=text_fg, bg=card_bg).pack(side="left")
+			else:
+				tkinter.Label(card_frame, text=f"Price: {price} VP", font=("Helvetica", 10),
+				              fg=text_fg, bg=card_bg).pack(pady=(5, 10))
 
-			# Optional: add a tooltip for more details
-			ToolTip(card_frame, text=f"{title}\nPrice: {price} VP")
+			# Optional tooltip (if implemented)
+			# ToolTip(card_frame, text=f"{title}\nPrice: {price} VP")
+
+			if is_bundle and bundle_uuid is not None and bundle_name is not None:
+				def on_click(event):
+					show_bundle_details(bundle_uuid, bundle_name)
+
+				card_frame.bind("<Button-1>", on_click)
+				for child in card_frame.winfo_children():
+					child.bind("<Button-1>", on_click)
 
 			return card_frame
 
-		def create_tab(tab_name):
-			"""
-			Creates and returns a Frame that will be added as a tab to the notebook.
-			"""
-			frame = ttk.Frame(notebook)
-			notebook.add(frame, text=tab_name)
-			return frame
-
+		# -------------------- SECTION CREATION FUNCTION --------------------
 		def create_section(parent_frame, title, items, images, prices, duration,
-		                   img_width, img_height):
-			"""
-			Creates a labeled frame with item cards in a grid.
-			Also places a timer label at the top-right.
-			Returns the label that displays the countdown and the total duration.
-			"""
+		                   img_width, img_height, rarities=None, is_bundle: bool = False):
 			section_frame = ttk.Labelframe(parent_frame, text=title)
-			section_frame.pack(fill="both", expand=True, padx=10, pady=10)
+			section_frame.pack(pady=10, padx=10, anchor="center", fill="x")
 
-			# Timer label
 			timer_frame = ttk.Frame(section_frame)
 			timer_frame.pack(fill="x", padx=10, pady=5)
-
 			timer_label = ttk.Label(timer_frame, text=f"Expires in: {format_duration(duration)}", style="Timer.TLabel")
 			timer_label.pack(side="left")
 
-			# Grid for items
 			items_frame = ttk.Frame(section_frame)
-			items_frame.pack(fill="both", expand=True, padx=10, pady=10)
+			items_frame.pack(padx=10, pady=10, fill="both", expand=True)
 
-			num_columns = 4
+			# Set columns based on item type.
+			num_columns = 2 if is_bundle else 4
 			num_items = len(items)
 			num_rows = (num_items + num_columns - 1) // num_columns
 
 			for row in range(num_rows):
-				# Determine how many items are in the current row.
 				row_count = min(num_columns, num_items - row * num_columns)
-				# Calculate offset to center items in this row.
 				offset = (num_columns - row_count) // 2
 				for col in range(row_count):
 					idx = row * num_columns + col
-
-					# Decide background color based on theme
-					card_bg = "#2a2a2a" if self.dark_mode else "#fafafa"
-					text_fg = "white" if self.dark_mode else "#1a1a1a"
-
+					card_bg = DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG
+					text_fg = TEXT_LIGHT if self.dark_mode else TEXT_DARK
+					rarity = rarities[idx] if rarities is not None else None
+					bundle_uuid = items[idx][1] if is_bundle else None
+					bundle_name = items[idx][0] if is_bundle else None
 					card = create_item_card(
 						items_frame,
 						images[idx],
-						items[idx],
+						items[idx] if not is_bundle else f"Bundle {items[idx][0]}",
 						prices[idx],
 						img_width=img_width,
 						img_height=img_height,
 						card_bg=card_bg,
-						text_fg=text_fg
+						text_fg=text_fg,
+						rarity=rarity,
+						is_bundle=is_bundle,
+						bundle_uuid=bundle_uuid,
+						bundle_name=bundle_name
 					)
-					# Place the card in the grid with the offset.
 					card.grid(row=row, column=offset + col, padx=10, pady=10, sticky="nsew")
+					# Allow the card to expand if needed.
+					items_frame.grid_columnconfigure(offset + col, weight=1)
 
 			return timer_label, duration
 
-		# =============== Create Tabs and Sections ===============
-		# Bundles tab
+		# -------------------- Create Tabs and Sections --------------------
+		def create_tab(tab_name):
+			frame = ttk.Frame(notebook)
+			notebook.add(frame, text=tab_name)
+			return frame
+
 		bundles_tab = create_tab("Bundles")
 		bundles_timer_label = None
 		total_bundles_duration = bundle_duration
@@ -962,11 +1267,11 @@ class ValorantShopChecker:
 				bundles_images,
 				bundle_prices,
 				bundle_duration,
-				img_width=300,
-				img_height=140
+				img_width=400,
+				img_height=220,
+				is_bundle=True
 			)
 
-		# Daily Skins tab
 		skins_tab = create_tab("Daily Skins")
 		skins_timer_label = None
 		total_skins_duration = skin_duration
@@ -979,10 +1284,10 @@ class ValorantShopChecker:
 				skin_prices,
 				skin_duration,
 				img_width=0,
-				img_height=0
+				img_height=0,
+				rarities=skin_rarity
 			)
 
-		# Night Market tab
 		nm_tab = create_tab("Night Market")
 		nm_timer_label = None
 		total_nm_duration = nm_duration if nm_duration else 0
@@ -998,45 +1303,51 @@ class ValorantShopChecker:
 				img_height=140
 			)
 		else:
-			# If no NM offers, show a simple label
 			ttk.Label(nm_tab, text="Night Market is currently not available.").pack(pady=20)
 
-		# =============== Timers Update Loop ===============
+		# -------------------- Timers Update Loop --------------------
 		remaining_bundle = total_bundles_duration
 		remaining_skin = total_skins_duration
 		remaining_nm = total_nm_duration
+		after_id = None
 
 		def update_timers():
-			nonlocal remaining_bundle, remaining_skin, remaining_nm
+			nonlocal remaining_bundle, remaining_skin, remaining_nm, after_id
+			if not root.winfo_exists():
+				return
+			try:
+				if current_bundles and bundles_timer_label:
+					if remaining_bundle > 0:
+						remaining_bundle -= 1
+						bundles_timer_label.config(text=f"Expires in: {format_duration(remaining_bundle)}")
+					else:
+						bundles_timer_label.config(text="Expired")
+				if skin_names and skins_timer_label:
+					if remaining_skin > 0:
+						remaining_skin -= 1
+						skins_timer_label.config(text=f"Expires in: {format_duration(remaining_skin)}")
+					else:
+						skins_timer_label.config(text="Expired")
+				if nm_offers and nm_timer_label:
+					if remaining_nm > 0:
+						remaining_nm -= 1
+						nm_timer_label.config(text=f"Expires in: {format_duration(remaining_nm)}")
+					else:
+						nm_timer_label.config(text="Expired")
+			except tkinter.TclError:
+				return
+			after_id = root.after(1000, update_timers)
 
-			# Bundles
-			if current_bundles and bundles_timer_label:
-				if remaining_bundle > 0:
-					remaining_bundle -= 1
-					bundles_timer_label.config(text=f"Expires in: {format_duration(remaining_bundle)}")
-				else:
-					bundles_timer_label.config(text="Expired")
+		def on_closing():
+			if after_id is not None:
+				try:
+					root.after_cancel(after_id)
+				except tkinter.TclError:
+					pass
+			root.destroy()
 
-			# Skins
-			if skin_names and skins_timer_label:
-				if remaining_skin > 0:
-					remaining_skin -= 1
-					skins_timer_label.config(text=f"Expires in: {format_duration(remaining_skin)}")
-				else:
-					skins_timer_label.config(text="Expired")
-
-			# Night Market
-			if nm_offers and nm_timer_label:
-				if remaining_nm > 0:
-					remaining_nm -= 1
-					nm_timer_label.config(text=f"Expires in: {format_duration(remaining_nm)}")
-				else:
-					nm_timer_label.config(text="Expired")
-
-			root.after(1000, update_timers)
-
+		root.protocol("WM_DELETE_WINDOW", on_closing)
 		update_timers()
-
 		root.mainloop()
 
 
