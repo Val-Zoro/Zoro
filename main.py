@@ -34,6 +34,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich import pretty
+from rich.text import Text
 
 from tkinter import ttk, messagebox
 
@@ -1351,6 +1352,49 @@ class ValorantShopChecker:
 		root.mainloop()
 
 
+class NotificationManager:
+	def __init__(self):
+		self.notifications = []
+		self.console = Console()
+
+	def has_notifications(self):
+		if len(self.notifications) >= 1:
+			return True
+		else:
+			return False
+
+	def add_notification(self, notification: str):
+		"""Add a notification."""
+		self.notifications.insert(0, notification)
+
+	def remove_notification(self, notification: str):
+		"""Remove a notification if it exists."""
+		if notification in self.notifications:
+			self.notifications.remove(notification)
+
+	def clear_notifications(self):
+		"""Clear all notifications."""
+		self.notifications = []
+
+	def get_display(self):
+		"""
+		Display the notifications using Rich Console.
+		The most recent notification appears first.
+		"""
+		if not self.notifications:
+			return ""
+
+		# Combine notifications into a single text block
+		content = "\n".join(self.notifications)
+		# Create a Panel with a title and styled border
+		panel = Panel(
+			Text(content, justify="center"),
+			border_style="yellow",
+			expand=False
+		)
+		return panel
+
+
 def calculate_kd(kills, deaths):
 	if deaths == 0:
 		return kills  # Stop div of zero
@@ -1433,70 +1477,99 @@ def get_headshot_percent(match_data: dict) -> dict[str, float | int]:
 	return players_headshot_percent
 
 
-def generate_match_report(match_stats: dict, host_player_uuid: str, only_host_player: bool = False):
-	all_players = match_stats['players']
+def generate_match_report(match_stats: dict, host_player_uuid: str, compact_mode: bool = False) -> list[str]:
+	"""
+	Generate a formatted match report for the host player.
+
+	Parameters:
+		match_stats (dict): The match details returned from the API.
+		host_player_uuid (str): The UUID of the host player.
+		compact_mode (bool): If True, output only key info in one line.
+
+	Returns:
+		list[str]: A list of strings representing the report lines.
+				   In compact mode, the list will contain a single string.
+	"""
+	# Retrieve host player data from match_stats
+	host_player = next(
+		(p for p in match_stats.get("players", []) if p.get("subject") == host_player_uuid),
+		None
+	)
+	if host_player is None:
+		return ["No data available for host player."]
+
+	# Basic stats for host player
+	user_name = get_userdata_from_id(host_player['subject'])[0]
+	agent_name = get_agent_data_from_id(host_player['characterId'])
+	stats = host_player.get("stats", {})
+	kd = calculate_kd(stats.get("kills", 0), stats.get("deaths", 0))
+
+	# Determine win/loss status based on team data
+	win_status = "N/A"
+	teams = match_stats.get("teams", [])
+	host_team = host_player.get("teamId", "")
+	for team in teams:
+		if team.get("teamId") == host_team:
+			win_status = "Win" if team.get("won", False) else "Loss"
+			break
+
+	# Calculate damage stats to determine headshot percentage (host only)
+	damage_stats = {"legshots": 0, "bodyshots": 0, "headshots": 0}
+	for round_stats in match_stats.get("roundResults", []):
+		for player_stat in round_stats.get("playerStats", []):
+			if player_stat.get("subject") == host_player_uuid:
+				for hit in player_stat.get("damage", []):
+					damage_stats = update_damage_stats(damage_stats, host_player_uuid, hit)
+	total_shots = damage_stats["legshots"] + damage_stats["bodyshots"] + damage_stats["headshots"]
+	headshot_percentage = (damage_stats["headshots"] / total_shots * 100) if total_shots > 0 else 0
+
+	# Get the map name using your existing helper (fallback to "Unknown")
+	map_name = get_mapdata_from_id(match_stats["matchInfo"].get("mapId", "Unknown"))
+
+	# Color settings based on results:
+	# Overall line color based on win status:
+	overall_color = Fore.GREEN if win_status == "Win" else Fore.RED
+	# KD value color: green if at least 1.0, else red.
+	kd_color = Fore.LIGHTGREEN_EX if kd >= 1.0 else Fore.LIGHTRED_EX
+	# Headshot percentage color: green if at least 20%, else red.
+	hs_color = Fore.LIGHTGREEN_EX if headshot_percentage >= 20 else Fore.LIGHTRED_EX
+
+	if compact_mode:
+		# Build a one-line report with key info and embedded colors.
+		# Format: [Map: X] [Agent: Y] [Result: Win/Loss] [HS%: Z%] [KD: W]
+		compact_report = (
+			f"{overall_color}[Map: {map_name}] "
+			f"[Agent: {agent_name}] "
+			f"[Result: {win_status}] "
+			f"[HS%: {hs_color}{round(headshot_percentage, 2)}%{overall_color}] "
+			f"[KD: {kd_color}{kd}{overall_color}]{Style.RESET_ALL}"
+		)
+		return [compact_report]
+
+	# Otherwise, generate a detailed multi-line report with sections.
+	border = overall_color + "=" * 50 + Style.RESET_ALL
 	report = []
-	damage_stats = {}
-
-	for player in all_players:
-		user_name = get_userdata_from_id(player['subject'])[0]
-		agent_name = get_agent_data_from_id(player['characterId'])
-		stats = player['stats']
-
-		if player['subject'] == host_player_uuid:
-			report.append(f"Player: (You) {user_name} ({agent_name})")
-			report.append(f"  Score: {stats['score']}")
-			kd = calculate_kd(stats["kills"], stats["deaths"])
-			report.append(f"  KD:    {kd}")
-			report.append(f"  Kills: {stats['kills']}")
-			report.append(f"  Deaths: {stats['deaths']}")
-			report.append(f"  Assists: {stats['assists']}")
-
-			# Round by Round
-			for round_stats in match_stats["roundResults"]:
-				# Player by Player
-				for player_stat in round_stats["playerStats"]:
-					# Who did the damage
-					main_player = player_stat["subject"]
-					try:
-						# Info on that damage, damage by damage
-						for hit in player_stat["damage"]:
-							# Update damage stats
-							damage_stats = update_damage_stats(damage_stats, main_player, hit)
-					except KeyError:
-						# If no damage is done to any player from that player by round
-						pass
-
-			# Calculate and display damage statistics for the host player
-			host_damage_stats = damage_stats.get(host_player_uuid, {"legshots": 0, "bodyshots": 0, "headshots": 0})
-			total_shots = host_damage_stats["legshots"] + host_damage_stats["bodyshots"] + host_damage_stats["headshots"]
-			if total_shots > 0:
-				headshot_percentage = (host_damage_stats["headshots"] / total_shots) * 100
-			else:
-				headshot_percentage = 0
-			try:
-				report.append(f"  Ability Casts: Grenades: {stats['abilityCasts']['grenadeCasts']}, Ability1: {stats['abilityCasts']['ability1Casts']}, Ability2: {stats['abilityCasts']['ability2Casts']}, Ultimates: {stats['abilityCasts']['ultimateCasts']}")
-				for rd in player['roundDamage']:
-					user = get_userdata_from_id(str(rd['receiver']))[0]
-					report.append(f"  Round {rd['round']} - Damage to {user}: {rd['damage']}")
-			except:
-				report.append("Failed to get!")
-
-			# Append host player specific damage stats
-			report.append(f"  Total Shots: {total_shots}")
-			report.append(f"  Leg Shots: {host_damage_stats['legshots']}")
-			report.append(f"  Body Shots: {host_damage_stats['bodyshots']}")
-			report.append(f"  Head Shots: {host_damage_stats['headshots']}")
-			report.append(f"  Headshot Percentage: {headshot_percentage:.2f}%")
-		else:
-			if not only_host_player:
-				report.append(f"Player: {user_name} ({agent_name})")
-				report.append(f"  Score: {stats['score']}")
-				kd = calculate_kd(stats["kills"], stats["deaths"])
-				report.append(f"  KD:    {kd}")
-				report.append(f"  Kills: {stats['kills']}")
-				report.append(f"  Deaths: {stats['deaths']}")
-				report.append(f"  Assists: {stats['assists']}")
+	report.append(border)
+	report.append(overall_color + "MATCH REPORT".center(50) + Style.RESET_ALL)
+	report.append(border)
+	report.append("")
+	report.append(overall_color + f"Player: (You) {user_name} ({agent_name})".center(50) + Style.RESET_ALL)
+	report.append("-" * 50)
+	report.append(f"Score    : {stats.get('score', 'N/A')}")
+	report.append(f"Kills    : {stats.get('kills', 0)}")
+	report.append(f"Deaths   : {stats.get('deaths', 0)}")
+	report.append(f"Assists  : {stats.get('assists', 0)}")
+	report.append(f"KD Ratio : {kd_color}{kd}{Style.RESET_ALL}")
+	report.append(f"Result   : {overall_color}{win_status}{Style.RESET_ALL}")
+	report.append("")
+	report.append("Damage Breakdown:".center(50))
+	report.append(f"  Total Shots : {total_shots}")
+	report.append(f"  Leg Shots   : {damage_stats['legshots']}")
+	report.append(f"  Body Shots  : {damage_stats['bodyshots']}")
+	report.append(f"  Head Shots  : {damage_stats['headshots']}")
+	report.append(f"  Headshot %% : {hs_color}{headshot_percentage:.2f}%{Style.RESET_ALL}")
+	report.append("")
+	report.append(border)
 
 	return report
 
@@ -1822,6 +1895,26 @@ def get_party_symbol(number: int):
 	return coloured_party_symbol
 
 
+async def match_report(match_id: str):
+	"""
+	    Polls the match details endpoint until the match data is available,
+	    processes the data, and then calls the console notification.
+	"""
+	# Poll every 5 seconds until match data is available.
+	while True:
+		response = api_request("GET", f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}", headers=internal_api_headers)
+		if response.status_code == 200:
+			match_data = response.json()
+			break
+		await asyncio.sleep(5)
+
+	# Process the match data to calculate statistics.
+	summary: str = generate_match_report(match_data, val_uuid, True)[0]
+
+	# Display the notification on the console.
+	Notification.add_notification(summary)
+
+
 async def run_in_game(cache: dict = None, partys: dict = None):
 	if cache is None:
 		cache = {}
@@ -1998,10 +2091,13 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 
 					buffer.write(Fore.YELLOW + f"Total Rounds: {total_rounds}\n" + Style.RESET_ALL)
 					buffer.write(Fore.YELLOW + f"Score: {team_1_rounds}  |  {team_2_rounds}\n" + Style.RESET_ALL)
-					if len(threads) > 0:
+
+					asyncio.create_task(match_report(match_id))
+
+					"""if len(threads) > 0:
 						for thread in threads:
 							if thread.is_alive():
-								print("Thread is alive!")
+								print("Thread is alive!")"""
 					await asyncio.sleep(3)
 					return
 
@@ -2313,6 +2409,7 @@ async def get_party(got_rank: dict = None):
 			buffer.truncate(0)
 			buffer.seek(0)
 
+			# Build the dynamic party section.
 			message_list = [color_text("----- Party -----\n", Fore.CYAN)]
 			party_id = await fetch_party_id()
 
@@ -2322,14 +2419,18 @@ async def get_party(got_rank: dict = None):
 
 				party_data = await fetch_party_data(party_id)
 				message_list.extend(parse_party_data(party_data, got_rank))
+				party_section = "".join(message_list)
 
-				# Render only if there's a change in content
-				current_rendered_content = ''.join(message_list)
-				if current_rendered_content != last_rendered_content:
-					buffer.write(current_rendered_content)
-					last_rendered_content = current_rendered_content
+				if Notification.has_notifications():
+					new_screen_content = Notification.get_display().renderable + party_section
+				else:
+					new_screen_content = party_section
+
+				if new_screen_content != last_rendered_content:
 					clear_console()
-					print_buffered(buffer)
+					console.print(Notification.get_display())
+					print("\n" + party_section)
+					last_rendered_content = new_screen_content
 
 				await asyncio.sleep(0.25)
 			else:
@@ -2425,6 +2526,7 @@ async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 		if data["MatchID"]:
 			clear_console()
 			logger.log(3, "Loading check_pregame -> pregame")
+			Notification.clear_notifications()
 			await run_pregame(data)
 			return True
 	else:
@@ -2439,6 +2541,7 @@ async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 		if return_code == 200:
 			clear_console()
 			logger.log(3, "Loading check_pregame -> in_game")
+			Notification.clear_notifications()
 			await run_in_game()
 			return True
 		elif return_code == 400:
@@ -2501,7 +2604,7 @@ async def display_friend_states(friend_states: list) -> None:
 
 
 async def main() -> None:
-	global ValorantShop
+	global ValorantShop, Notification
 	clear_console()
 	main_display()
 	console.print("[yellow]One moment while we sign you in...[/yellow]\n")
@@ -2512,6 +2615,7 @@ async def main() -> None:
 		logger.log(3, f"Using Version: {VERSION}\nLogged in as: {name}#{tag}")
 
 		ValorantShop = ValorantShopChecker()
+		Notification = NotificationManager()
 
 		while True:
 			try:
