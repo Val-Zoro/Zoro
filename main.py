@@ -924,10 +924,10 @@ class ValorantShopChecker:
 		# -------------------- Hover Effects for Cards --------------------
 		def add_hover_effect(widget, normal_bg, hover_bg):
 			def on_enter(event):
-				widget.configure(bg=hover_bg)
+				widget.configure(bg="#7c7c7c")
 				for child in widget.winfo_children():
 					try:
-						child.configure(bg=hover_bg)
+						child.configure(bg="#7c7c7c")
 					except Exception:
 						pass
 
