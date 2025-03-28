@@ -87,8 +87,8 @@ def create_default_config():
 			'; What game-mode should these stats be taken from\n'
 			'; Valid values: "ALL", "SAME", or one of the following\n; ' +
 			"\n; ".join([f"{code} ({name})" for code, name in GAME_MODES.items()]) + '\n'
-			                                                                         '; Default = "ALL"\n'
-			                                                                         'stats_used_game_mode = ALL\n'
+																					 '; Default = "ALL"\n'
+																					 'stats_used_game_mode = ALL\n'
 	)
 	with open(CONFIG_FILE, "w") as file:
 		file.write(raw_config_data)
@@ -184,14 +184,14 @@ if not os.path.exists(DATA_PATH):
 	os.mkdir(DATA_PATH)
 
 pub_key = ("-----BEGIN PUBLIC KEY-----\n"
-           "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqIKYJWIl6Wif397yi3P+\n"
-           "YnVZ9ExhGvuUpECU+BhpnJkP1pHJldurnKfpIdGhsiTblzlFvMS5y3wdKNmtpIW7\n"
-           "8KVC8bL7FwLShmMBQNkEL4GvZfgGHYbAlJOXOiWuqDk/CS28ccZyEzAkxT4WY4H2\n"
-           "BWVVBPax72ksJL2oMOxYJVZg2w3P3LbWNfcrgAC1/HPVzmuYka0IDo9TevbCwccC\n"
-           "yNS3GlJ6g4E7yp8RIsFyEoq7DueHuK+zkvgpmb5eLRg8Ssq9t6bCcnx6Sl2hb4n/\n"
-           "5OmRNvohCFM3WpP1vAdNxrsQT8uSuExbH4g7uDT/l5+ZdpxytzEzGdvPezmPiXhL\n"
-           "5QIDAQAB\n"
-           "-----END PUBLIC KEY-----")
+		   "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqIKYJWIl6Wif397yi3P+\n"
+		   "YnVZ9ExhGvuUpECU+BhpnJkP1pHJldurnKfpIdGhsiTblzlFvMS5y3wdKNmtpIW7\n"
+		   "8KVC8bL7FwLShmMBQNkEL4GvZfgGHYbAlJOXOiWuqDk/CS28ccZyEzAkxT4WY4H2\n"
+		   "BWVVBPax72ksJL2oMOxYJVZg2w3P3LbWNfcrgAC1/HPVzmuYka0IDo9TevbCwccC\n"
+		   "yNS3GlJ6g4E7yp8RIsFyEoq7DueHuK+zkvgpmb5eLRg8Ssq9t6bCcnx6Sl2hb4n/\n"
+		   "5OmRNvohCFM3WpP1vAdNxrsQT8uSuExbH4g7uDT/l5+ZdpxytzEzGdvPezmPiXhL\n"
+		   "5QIDAQAB\n"
+		   "-----END PUBLIC KEY-----")
 
 BANNER = """
 ██╗   ██╗ █████╗ ██╗      ██████╗ ██████╗  █████╗ ███╗   ██╗████████╗    ███████╗ ██████╗ ██████╗  ██████╗ 
@@ -212,9 +212,9 @@ class Logger:
 		self.VERSION = "v1.6.0"
 
 		self.LEVELS = {1: f"{Fore.RED}Error{Fore.RESET}",
-		               2: f"{Fore.YELLOW}Warning{Fore.RESET}",
-		               3: f"{Fore.BLUE}Info{Fore.RESET}",
-		               4: f"{Fore.LIGHTWHITE_EX}Debug{Fore.RESET}"}
+					   2: f"{Fore.YELLOW}Warning{Fore.RESET}",
+					   3: f"{Fore.BLUE}Info{Fore.RESET}",
+					   4: f"{Fore.LIGHTWHITE_EX}Debug{Fore.RESET}"}
 		self.MAX_FILE_SIZE = 1 * 1024 * 1024  # 1MB
 		self.LOG_TIME_INTERVAL = timedelta(days=1)  # 1 day
 
@@ -261,19 +261,19 @@ class Logger:
 
 	def _log_file_header(self):
 		return (f"\n{Fore.LIGHTWHITE_EX}"
-		        f"============================================================\n"
-		        f"Application Name:    {self.app_name}\n"
-		        f"Version:             {self.VERSION}\n"
-		        f"Log File Created:    {self._timestamp()}\n"
-		        f"Log Levels:          [DEBUG | INFO | WARNING | ERROR]\n"
-		        f"------------------------------------------------------------\n"
-		        f"Hostname:            [Null]\n"
-		        f"Operating System:    [{system()}, {version()}]\n"
-		        f"HWID:                {self.hwid}\n"
-		        f"------------------------------------------------------------\n"
-		        f"Log Format:          [Timestamp] [Log Level] [Message]\n\n"
-		        f"============================================================\n\n"
-		        f"Log Start:{Fore.RESET}\n")
+				f"============================================================\n"
+				f"Application Name:    {self.app_name}\n"
+				f"Version:             {self.VERSION}\n"
+				f"Log File Created:    {self._timestamp()}\n"
+				f"Log Levels:          [DEBUG | INFO | WARNING | ERROR]\n"
+				f"------------------------------------------------------------\n"
+				f"Hostname:            [Null]\n"
+				f"Operating System:    [{system()}, {version()}]\n"
+				f"HWID:                {self.hwid}\n"
+				f"------------------------------------------------------------\n"
+				f"Log Format:          [Timestamp] [Log Level] [Message]\n\n"
+				f"============================================================\n\n"
+				f"Log Start:{Fore.RESET}\n")
 
 	def load_public_key(self, key: str):
 		self.key = RSA.import_key(key)
@@ -508,9 +508,9 @@ async def get_user_data_from_riot_client():
 			# Get user login tokens
 			try:
 				with api_request("GET",
-				                 f"https://127.0.0.1:{port}/entitlements/v1/token",
-				                 headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False
-				                 ) as r:
+								 f"https://127.0.0.1:{port}/entitlements/v1/token",
+								 headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False
+								 ) as r:
 					return_data = r.json()
 			except Exception:
 				print("Please make sure Riot Client is open!")
@@ -932,10 +932,14 @@ class ValorantShopChecker:
 						pass
 
 			def on_leave(event):
-				widget.configure(bg=normal_bg)
+				new_card_bg = DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG
+				widget.configure(bg=new_card_bg)
+
 				for child in widget.winfo_children():
 					try:
-						child.configure(bg=normal_bg)
+						child.configure(bg=new_card_bg)
+						if isinstance(child, tkinter.Label):
+							child.configure(fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK)
 					except Exception:
 						pass
 
@@ -961,6 +965,8 @@ class ValorantShopChecker:
 				style.configure("TNotebook", background=DARK_BG, borderwidth=0)
 				style.configure("TNotebook.Tab", background=DARK_CARD_BG, foreground="#CCCCCC", borderwidth=0, padding=[10, 5])
 				style.map("TNotebook.Tab", background=[("selected", "#444444")], foreground=[("selected", TEXT_LIGHT)])
+
+
 			else:
 				# Light Mode configuration
 				root.configure(bg=LIGHT_BG)
@@ -1095,9 +1101,9 @@ class ValorantShopChecker:
 				details_frame.pack(side="left", fill="x", expand=True)
 
 				tkinter.Label(details_frame, text=item_name, font=("Helvetica", 12, "bold"),
-				              bg=card_bg, fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
+							  bg=card_bg, fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
 				tkinter.Label(details_frame, text=f"Cost: {item_cost} VP", font=("Helvetica", 10),
-				              bg=card_bg, fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
+							  bg=card_bg, fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
 
 				if item_rarity and len(item_rarity) >= 3:
 					rarity_name, highlight_color, display_icon_url = item_rarity
@@ -1116,12 +1122,12 @@ class ValorantShopChecker:
 					except Exception as e:
 						print("Error loading rarity icon in popup:", e)
 					tkinter.Label(rarity_frame, text=rarity_name, font=("Helvetica", 8, "bold"),
-					              bg=highlight_color, fg="white").pack(side="left", padx=(0, 2))
+								  bg=highlight_color, fg="white").pack(side="left", padx=(0, 2))
 
 		# -------------------- ITEM CARD CREATION FUNCTION --------------------
 		def create_item_card(parent, image_url, title, price, img_width, img_height,
-		                     card_bg, text_fg, rarity=None,
-		                     is_bundle=False, bundle_uuid=None, bundle_name=None):
+							 card_bg, text_fg, rarity=None,
+							 is_bundle=False, bundle_uuid=None, bundle_name=None):
 			if is_bundle:
 				card_frame = tkinter.Frame(parent, bg=card_bg, bd=0)
 				card_frame.configure(highlightthickness=1, highlightbackground="#CCCCCC", padx=10, pady=10)
@@ -1137,7 +1143,7 @@ class ValorantShopChecker:
 				badge_frame = tkinter.Frame(card_frame, bg=card_bg)
 				badge_frame.pack(anchor="nw", padx=5, pady=5)
 				badge = tkinter.Label(badge_frame, text="BUNDLE", bg=ACCENT_COLOR, fg=TEXT_DARK,
-				                      font=("Helvetica", 8, "bold"))
+									  font=("Helvetica", 8, "bold"))
 				badge.pack()
 
 			if rarity:
@@ -1157,7 +1163,7 @@ class ValorantShopChecker:
 				except Exception as e:
 					print("Error loading rarity icon:", e)
 				tkinter.Label(rarity_frame, text=rarity_name, bg=highlight_color, fg="white",
-				              font=("Helvetica", 8, "bold")).pack(side="left")
+							  font=("Helvetica", 8, "bold")).pack(side="left")
 
 			try:
 				item_image = load_image(image_url)
@@ -1182,12 +1188,12 @@ class ValorantShopChecker:
 				price_frame = tkinter.Frame(card_frame, bg=card_bg)
 				price_frame.pack(pady=(5, 10))
 				tkinter.Label(price_frame, text=f"{base_price} VP", font=("Helvetica", 10, "overstrike"),
-				              fg="red", bg=card_bg).pack(side="left", padx=(0, 5))
+							  fg="red", bg=card_bg).pack(side="left", padx=(0, 5))
 				tkinter.Label(price_frame, text=f"{discount_price} VP", font=("Helvetica", 12, "bold"),
-				              fg=text_fg, bg=card_bg).pack(side="left")
+							  fg=text_fg, bg=card_bg).pack(side="left")
 			else:
 				tkinter.Label(card_frame, text=f"Price: {price} VP", font=("Helvetica", 10),
-				              fg=text_fg, bg=card_bg).pack(pady=(5, 10))
+							  fg=text_fg, bg=card_bg).pack(pady=(5, 10))
 
 			# Optional tooltip (if implemented)
 			# ToolTip(card_frame, text=f"{title}\nPrice: {price} VP")
@@ -1204,7 +1210,7 @@ class ValorantShopChecker:
 
 		# -------------------- SECTION CREATION FUNCTION --------------------
 		def create_section(parent_frame, title, items, images, prices, duration,
-		                   img_width, img_height, rarities=None, is_bundle: bool = False):
+						   img_width, img_height, rarities=None, is_bundle: bool = False):
 			section_frame = ttk.Labelframe(parent_frame, text=title)
 			section_frame.pack(pady=10, padx=10, anchor="center", fill="x")
 
@@ -1815,7 +1821,7 @@ def get_user_current_state(puuid: str, presences_data: dict = None) -> int:
 	try:
 		if presences_data is None:
 			with api_request("GET", f"https://127.0.0.1:{port}/chat/v4/presences",
-			                 headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
+							 headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
 				data = r.json()
 		else:
 			data = presences_data
@@ -1857,7 +1863,7 @@ def get_current_game_score(puuid: str) -> tuple[int, int]:
 
 	try:
 		data = api_request("GET", f"https://127.0.0.1:{port}/chat/v4/presences",
-		                   headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False).json()
+						   headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False).json()
 
 		all_user_data = data["presences"]
 		for user in all_user_data:
@@ -1897,8 +1903,8 @@ def get_party_symbol(number: int):
 
 async def match_report(match_id: str):
 	"""
-	    Polls the match details endpoint until the match data is available,
-	    processes the data, and then calls the console notification.
+		Polls the match details endpoint until the match data is available,
+		processes the data, and then calls the console notification.
 	"""
 	# Poll every 5 seconds until match data is available.
 	while True:
@@ -1959,7 +1965,7 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 		buffer.seek(0)
 		try:
 			with api_request("GET", f"https://glz-na-1.na.a.pvp.net/core-game/v1/matches/{match_id}",
-			                 headers=internal_api_headers) as r:
+							 headers=internal_api_headers) as r:
 				if r.status_code == 400:
 					logger.log(2, f"Login may have expired! Re-logging in.\n Tried to get in-game match data. MATCH_ID -> {match_id}")
 					await log_in()
@@ -2082,7 +2088,7 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 
 				try:
 					with api_request("GET", f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}",
-					                 headers=internal_api_headers) as re_match_stats:
+									 headers=internal_api_headers) as re_match_stats:
 						match_stats = re_match_stats.json()
 
 					total_rounds = match_stats["teams"][0]["roundsPlayed"]
@@ -2179,7 +2185,7 @@ async def run_pregame(data: dict):
 		buffer.seek(0)
 		try:
 			with api_request("GET", f"https://glz-na-1.na.a.pvp.net/pregame/v1/matches/{data['MatchID']}",
-			                 headers=internal_api_headers) as r:
+							 headers=internal_api_headers) as r:
 				match_data = r.json()
 				with open(f"{DATA_PATH}/pre_match_data.json", "w") as f:
 					dump(match_data, f, indent=4)
@@ -2373,7 +2379,7 @@ async def get_friend_states() -> list[str]:
 	friend_list = []
 	try:
 		with api_request("GET", f"https://127.0.0.1:{port}/chat/v4/presences",
-		                 headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
+						 headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"}, verify=False) as r:
 			data = r.json()
 		all_user_data = data["presences"]
 		for user in all_user_data:
@@ -2520,7 +2526,7 @@ async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 
 	# Try pregame
 	r = api_request("GET", f"https://glz-na-1.na.a.pvp.net/pregame/v1/players/{val_uuid}",
-	                headers=internal_api_headers)
+					headers=internal_api_headers)
 	if r.status_code != 404:
 		data = r.json()
 		if data["MatchID"]:
@@ -2535,7 +2541,7 @@ async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 
 	# Try playing in-game
 	r = api_request("GET", f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}",
-	                headers=internal_api_headers)
+					headers=internal_api_headers)
 	try:
 		return_code = r.status_code
 		if return_code == 200:
