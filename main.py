@@ -43,7 +43,7 @@ from tkinter import ttk, messagebox
 console = Console()
 pretty.install()
 
-DEBUG = True
+DEBUG = False
 DEBUG_MODE = False
 SAVE_DATA = False
 
