@@ -350,7 +350,7 @@ def generate_filename(method, url, params=None, data=None):
 
 	# Hash request details to ensure unique filenames
 	hash_input = f"{method}_{url}_{dumps(params, sort_keys=True)}_{dumps(data, sort_keys=True)}"
-	hashed = hashlib.md5(hash_input.encode()).hexdigest()
+	hashed = hashlib.sha256(hash_input.encode()).hexdigest()
 
 	# Create directory for this request type
 	folder_path = os.path.join(DATA_PATH, safe_path)
