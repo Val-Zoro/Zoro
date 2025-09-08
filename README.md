@@ -1,12 +1,16 @@
 # Valorant Zoro
 **Valorant Zoro** is a powerful tool designed to enhance your Valorant gaming experience. With two main features—checking your shop without opening the game and providing detailed in-game statistics—Valorant Zoro brings convenience and insight right to your desktop.
 
+> [!NOTE]
+> This is a BETA!
+
+
 ## Features
 ### 1. Valorant Shop Checker
 - View your Valorant shop directly from the software without needing to open the game.
 ### 2. In-Game Mode
 - **Party Overview:** See your current rank, level, and game mode, along with detailed statistics for all party members or just yourself if you're solo.
-- **Queue Notifications & Control:** Get notified when a queue starts, and unready up to prevent the queue from proceeding. This feature gives you more control over your party’s game preparations.
+- ~~**Queue Notifications & Control:** Get notified when a queue starts, and unready up to prevent the queue from proceeding. This feature gives you more control over your party’s game preparations.~~
 - **Pregame Insights:** View stats for all teammates including their rank, level, KD, headshot percentage, and past game results. You can also see who they are partied with.
 - **In-Game Stats:** During the match, keep track of both your team and the enemy team's stats, including KD and headshot percentages.
 
@@ -26,6 +30,8 @@
 - Have Fun :D
 
 # Working on
-- Deeper postgame and pregame statistics
-- UI overhaul
+- [ ] Deeper postgame and pregame statistics
+- [ ] UI overhaul (in v3)
+- [ ] Speed
+- [ ] Bugs (🐛🐜🪰)
   
