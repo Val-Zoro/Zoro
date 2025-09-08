@@ -1,4 +1,4 @@
-VERSION = "v2.4.2"
+VERSION = "v2.4.3"
 
 import asyncio
 import threading
@@ -16,7 +16,7 @@ import tkinter.messagebox
 
 from json import dump, dumps, loads, load
 from platform import system, version
-from wmi import WMI
+# from wmi import WMI | Removed to avoid dependency issues on non-Windows systems
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP, AES
 from Crypto.Random import get_random_bytes
@@ -43,7 +43,7 @@ from tkinter import ttk, messagebox
 console = Console()
 pretty.install()
 
-DEBUG = True
+DEBUG = False
 DEBUG_MODE = False
 SAVE_DATA = False
 
@@ -224,14 +224,15 @@ class Logger:
 		self.hwid = None
 
 	def __get_sys_hwid(self):
-		try:
-			c = WMI()
-			self.hwid = c.Win32_ComputerSystemProduct()[0].UUID, c.Win32_BaseBoard()[0].SerialNumber
-		except:
-			pass
+		# 	c = WMI()
+		# 	self.hwid = c.Win32_ComputerSystemProduct()[0].UUID, c.Win32_BaseBoard()[0].SerialNumber
+		self.hwid = ("Unknown", "Unknown")
 
 	def _encrypt_message(self, message: str) -> str:
-		cipher_rsa = PKCS1_OAEP.new(self.key)
+		try:
+			cipher_rsa = PKCS1_OAEP.new(self.key)
+		except Exception:
+			raise(ValueError(f"[Logger] Public key not loaded, cannot encrypt log message."))
 
 		aes_key = get_random_bytes(16)
 
@@ -350,7 +351,7 @@ def generate_filename(method, url, params=None, data=None):
 
 	# Hash request details to ensure unique filenames
 	hash_input = f"{method}_{url}_{dumps(params, sort_keys=True)}_{dumps(data, sort_keys=True)}"
-	hashed = hashlib.md5(hash_input.encode()).hexdigest()
+	hashed = hashlib.sha256(hash_input.encode()).hexdigest()
 
 	# Create directory for this request type
 	folder_path = os.path.join(DATA_PATH, safe_path)
@@ -726,8 +727,12 @@ class ValorantShopChecker:
 							item_data = api_request("GET", f"https://valorant-api.com/v1/playertitles/{item_uuid}").json()
 						else:
 							item_data = {"data": {"displayName": "null", "displayIcon": "null"}}  # FIXME | Replace with an image not null
+						#print(item_data)
 						item_name: str = item_data["data"]["displayName"]
-						item_icon: str = item_data["data"]["displayIcon"]
+						try:
+							item_icon: str = item_data["data"]["displayIcon"]
+						except KeyError:
+							item_icon = ""
 						skin_rarity = []
 						if is_skin:
 							for data in all_skins_data:
@@ -1419,7 +1424,7 @@ def get_userdata_from_id(user_id: str, host_player_uuid: str | None = None) -> t
 		user_name = f"{user_info['GameName']}#{user_info['TagLine']}"
 		if host_player_uuid is not None:
 			if user_id == host_player_uuid:
-				host_player = f"\033[33m(You) {user_name}\033[0m"
+				host_player = f"(You) {user_name}"
 				return host_player, True
 			else:
 				host_player = user_name
@@ -1732,7 +1737,7 @@ def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC", ga
 					team = match["teamId"]
 					game_team_id = match_data["teams"][0]["teamId"]
 					won = match_data["teams"][0]["won"] if game_team_id == team else match_data["teams"][1]["won"]
-					wins.append(Fore.GREEN + "■" if won else Fore.RED + "■")
+					wins.append("[green]■[/green]" if won else "[red]■[/red]")
 					kills += match["stats"]["kills"]
 					deaths += match["stats"]["deaths"]
 
@@ -1925,24 +1930,41 @@ def get_current_game_score(puuid: str) -> tuple[int, int]:
 	return -1, -1
 
 
-def get_party_symbol(number: int):
+def get_party_symbol(number: int, use_markup: bool = False) -> str:
 	party_symbol = "★"
-	party_colours = [
-		"\033[38;5;196m",  # Red
-		"\033[38;5;208m",  # Orange
-		"\033[38;5;226m",  # Yellow
-		"\033[38;5;46m",  # Green
-		"\033[38;5;21m",  # Blue
-		"\033[38;5;201m",  # Magenta
-		"\033[38;5;51m",  # Cyan
-		"\033[38;5;200m",  # Pink
-		"\033[38;5;93m",  # Bright Purple
-		"\033[38;5;118m",  # Lime Green
-	]
-	reset = "\033[0m"
-
-	coloured_party_symbol = f"{party_colours[number - 1]}{party_symbol}{reset} "
-	return coloured_party_symbol
+	if use_markup:
+		# Using Rich-supported color names (or hex values)
+		party_colors = [
+			"red",         # originally ANSI 196
+			"orange3",     # originally ANSI 208
+			"yellow",      # originally ANSI 226
+			"green",       # originally ANSI 46
+			"blue",        # originally ANSI 21
+			"magenta",     # originally ANSI 201
+			"cyan",        # originally ANSI 51
+			"deeppink",    # originally ANSI 200
+			"purple",      # originally ANSI 93
+			"chartreuse3", # originally ANSI 118
+		]
+		color = party_colors[number - 1]
+		# Return a string with Rich markup that will color the star.
+		return f"[{color}]{party_symbol}[/{color}] "
+	else:
+		party_colours = [
+			"\033[38;5;196m",  # Red
+			"\033[38;5;208m",  # Orange
+			"\033[38;5;226m",  # Yellow
+			"\033[38;5;46m",  # Green
+			"\033[38;5;21m",  # Blue
+			"\033[38;5;201m",  # Magenta
+			"\033[38;5;51m",  # Cyan
+			"\033[38;5;200m",  # Pink
+			"\033[38;5;93m",  # Bright Purple
+			"\033[38;5;118m",  # Lime Green
+		]
+		reset = "\033[0m"
+		coloured_party_symbol = f"{party_colours[number - 1]}{party_symbol}{reset} "
+		return coloured_party_symbol
 
 
 async def match_report(match_id: str):
@@ -2047,8 +2069,6 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 						if "console" in gamemode_name:
 							rank = get_rank_from_uuid(str(player_id), "CONSOLE")
 							thread = threading.Thread(target=fetch_player_data, args=(player_id, "CONSOLE"))
-							threads.append(thread)
-							thread.start()
 						else:
 							rank = get_rank_from_uuid(str(player_id))
 							thread = threading.Thread(target=fetch_player_data, args=(player_id, "PC"))
@@ -2079,11 +2099,11 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 						if len(members) > 1 and str(data[3]) in members:
 							for existing_party in party_exists:
 								if existing_party[0] == party_id:
-									party_symbol = get_party_symbol(int(existing_party[1]))
+									party_symbol = get_party_symbol(int(existing_party[1]), True)
 									break
 							else:
 								party_exists.append([party_id, party_number])
-								party_symbol = get_party_symbol(int(party_number))
+								party_symbol = get_party_symbol(int(party_number), True)
 								party_number += 1
 								break
 					# Using Rich markup for colors
@@ -2098,11 +2118,11 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 						if len(members) > 1 and str(data[3]) in members:
 							for existing_party in party_exists:
 								if existing_party[0] == party_id:
-									party_symbol = get_party_symbol(int(existing_party[1]))
+									party_symbol = get_party_symbol(int(existing_party[1]), True)
 									break
 							else:
 								party_exists.append([party_id, party_number])
-								party_symbol = get_party_symbol(int(party_number))
+								party_symbol = get_party_symbol(int(party_number), True)
 								party_number += 1
 								break
 					team_red_str += f"{party_symbol}[red][LVL {data[1]}][/red] {get_rank_color(data[2], True)} {user_name} ({data[0]})\n"
@@ -2119,7 +2139,7 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 
 				# Clear the console and print header plus side-by-side team panels
 				console.clear()
-				os.system("cls")
+				clear_console()
 				console.print(header)
 				console.print(Columns([team_blue_panel, team_red_panel], expand=True, equal=True))
 
@@ -2182,6 +2202,7 @@ def add_parties(partys, new_parties):
 
 async def run_pregame(data: dict):
 	print("Match FOUND! Getting match details")
+
 	got_rank = False
 	got_map_and_gamemode = False
 	player_data = {}
@@ -2215,10 +2236,10 @@ async def run_pregame(data: dict):
 				gamemode_name = match_data["QueueID"]
 				got_map_and_gamemode = True
 
-			buffer.write(color_text("=" * 30 + "\n", Fore.LIGHTWHITE_EX))
-			buffer.write(color_text(f"Map: {map_name}\n", Fore.GREEN))
-			buffer.write(color_text(f"Game Mode: {str(gamemode_name).capitalize()}\n", Fore.CYAN))
-			buffer.write(color_text("=" * 30 + "\n\n", Fore.LIGHTWHITE_EX))
+			buffer.write(f"[bright_white]{'=' * 30}[/bright_white]\n")
+			buffer.write(f"[green]Map: {map_name}[/green]\n")
+			buffer.write(f"[cyan]Game Mode: {str(gamemode_name).capitalize()}[/cyan]\n")
+			buffer.write(f"[bright_white]{'=' * 30}\n\n[/bright_white]")
 
 			our_team_colour = match_data["AllyTeam"]["TeamID"]
 
@@ -2243,15 +2264,18 @@ async def run_pregame(data: dict):
 					if "console" in gamemode_name:
 						rank = get_rank_from_uuid(str(ally_player["PlayerIdentity"]["Subject"]), "CONSOLE")
 						rank_list[str(user_name)] = str(rank)
-						thread = threading.Thread(target=fetch_player_data, args=(ally_player["PlayerIdentity"]["Subject"], "CONSOLE"))
+						thread = threading.Thread(target=fetch_player_data,
+												  args=(ally_player["PlayerIdentity"]["Subject"], "CONSOLE"))
 					else:
 						rank = get_rank_from_uuid(str(ally_player["PlayerIdentity"]["Subject"]))
 						rank_list[str(user_name)] = str(rank)
-						thread = threading.Thread(target=fetch_player_data, args=(ally_player["PlayerIdentity"]["Subject"], "PC"))
+						thread = threading.Thread(target=fetch_player_data,
+												  args=(ally_player["PlayerIdentity"]["Subject"], "PC"))
 					threads.append(thread)
 					thread.start()
 
-				player_data[user_name] = cache.get(str(ally_player["PlayerIdentity"]["Subject"]), ("Loading", "Loading"))
+				player_data[user_name] = cache.get(str(ally_player["PlayerIdentity"]["Subject"]),
+												   ("Loading", "Loading"))
 				state = ally_player["CharacterSelectionState"]
 
 				rank = rank_list.get(str(user_name), "Failed")
@@ -2262,12 +2286,11 @@ async def run_pregame(data: dict):
 						if ally_player["PlayerIdentity"]["Subject"] in members:
 							for existing_party in party_exists:
 								if existing_party[0] == party_id:
-									party_symbol = get_party_symbol(int(existing_party[1]))
+									party_symbol = get_party_symbol(int(existing_party[1]), True)
 									break
 							else:
-								# Assign new party number
 								party_exists.append([party_id, party_number])
-								party_symbol = get_party_symbol(int(party_number))
+								party_symbol = get_party_symbol(int(party_number), True)
 								party_number += 1
 								break
 
@@ -2278,32 +2301,33 @@ async def run_pregame(data: dict):
 				}.get(state, "(Unknown)")
 
 				state_color = {
-					"": Fore.YELLOW,
-					"selected": Fore.BLUE,
-					"locked": Fore.GREEN
-				}.get(state, Fore.RED)
+					"": "yellow",
+					"selected": "blue",
+					"locked": "green"
+				}.get(state, "red")
 
 				buffer.write(
-					f"{party_symbol}{color_text(f'[LVL {player_level}]', state_color)} {get_rank_color(rank)} {user_name}: {agent_name} {state_display}\n"
+					f"{party_symbol}[{state_color}][LVL {player_level}][/{state_color}] {get_rank_color(rank, True)} {user_name}: {agent_name} {state_display}\n"
 				)
 
-				kd, wins, avg = cache.get(str(ally_player["PlayerIdentity"]["Subject"]), ("Loading", "Loading", "Loading"))
-				buffer.write(color_text(f"  Player KD: {kd} | Headshot: {avg}%\n", Fore.MAGENTA))
-				buffer.write(color_text(f"  Past Matches: {''.join(wins)}\n\n", Fore.LIGHTMAGENTA_EX))
+				kd, wins, avg = cache.get(str(ally_player["PlayerIdentity"]["Subject"]),
+										  ("Loading", "Loading", "Loading"))
+				buffer.write(f"[magenta]  Player KD: {kd} | Headshot: {avg}%[/magenta]\n")
+				buffer.write(f"[bright_magenta]  Past Matches: {''.join(wins)}[/bright_magenta]\n\n")
 
 			got_rank = True
-			buffer.write(color_text(f"Enemy team: {match_data['EnemyTeamLockCount']}/{match_data['EnemyTeamSize']} LOCKED\n", Fore.RED))
+			buffer.write(
+				f"[red]Enemy team: {match_data['EnemyTeamLockCount']}/{match_data['EnemyTeamSize']} LOCKED[/red]\n")
 			if match_data["PhaseTimeRemainingNS"] == 0:
-				buffer.write(color_text("In Loading Phase\n", Fore.CYAN))
+				buffer.write(f"[cyan]In Loading Phase[/cyan]\n")
 				break
 
-			# Render the current buffer content
 			current_rendered_content = buffer.getvalue()
 
 			# Only update the screen if content has changed
 			if current_rendered_content != last_rendered_content:
 				clear_console()
-				print(current_rendered_content)
+				console.print(current_rendered_content, markup=True)
 				last_rendered_content = current_rendered_content
 
 			time.sleep(0.5)
@@ -2439,8 +2463,6 @@ async def get_party(got_rank: dict = None):
 			start=int(time.time()),
 		)
 
-	await match_report("e3b681a8-aed3-4e36-8a58-1664b60b2c3d")
-
 	while True:
 		return_code = await check_if_user_in_pregame()
 		if return_code:
@@ -2493,7 +2515,7 @@ async def fetch_party_id():
 				with api_request("GET", f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(val_uuid)}", headers=internal_api_headers_console) as r2:
 					return r2.json().get('CurrentPartyID')
 			else:
-				logger.log(1, "Error fetching party details.")
+				logger.log(1, f"Error fetching party details. Dumping Data:\n{r.json()}\nParameters: {str(val_uuid)}, {internal_api_headers}, {internal_api_headers_console}")
 				return None
 		elif r.status_code == 404:
 			return None
@@ -2521,7 +2543,7 @@ def parse_party_data(party_data, got_rank):
 	for member in party_data.get("Members", []):
 		player_name, is_user = get_userdata_from_id(str(member["Subject"]), val_uuid)
 		if member["Subject"] in DEV_PUUID_LIST:
-			player_name += " [DEV]"  # TODO | Make colour and shit
+			player_name += " [DEV]"
 		is_leader = member.get("IsOwner", False)
 		player_lvl = member["PlayerIdentity"].get("AccountLevel", "-1")
 
@@ -2566,7 +2588,7 @@ async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 		try:
 			# Try pregame
 			r = api_request("GET", f"https://glz-na-1.na.a.pvp.net/pregame/v1/players/{val_uuid}",
-			                headers=internal_api_headers)
+							headers=internal_api_headers)
 			if r.status_code != 404:
 				data = r.json()
 				if data["MatchID"]:
@@ -2588,7 +2610,7 @@ async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 		# Try playing in-game
 		try:
 			r = api_request("GET", f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}",
-			                headers=internal_api_headers)
+							headers=internal_api_headers)
 			return_code = r.status_code
 			if return_code == 200:
 				clear_console()
@@ -2666,7 +2688,7 @@ async def main() -> None:
 	logged_in = await log_in()
 	if logged_in:
 		name, tag = get_userdata_from_token()
-		logger.log(3, f"Using Version: {VERSION}\nLogged in as: {name}#{tag}")
+		logger.log(3, f"Using Version: {VERSION} || Logged in as: {name}#{tag}")
 
 		ValorantShop = ValorantShopChecker()
 		Notification = NotificationManager()
