@@ -3,6 +3,7 @@ name: GitHub Actions Security Analysis with zizmor 🌈
 on:
   push:
     branches: ["master"]
+    paths: ["**.py"]
   pull_request:
     branches: ["**"]
 
@@ -10,7 +11,7 @@ permissions: {}
 
 jobs:
   zizmor:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     permissions:
       security-events: write
       contents: read # only needed for private repos
