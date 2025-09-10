@@ -2,7 +2,7 @@ aioconsole==0.7.1
 aiohttp==3.12.14
 colorama==0.4.6
 Pillow~=11.0.0
-Requests==2.32.4
+Requests==2.32.5
 rich==13.7.1
 urllib3==2.5.0
 selenium==4.22.0
