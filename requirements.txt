@@ -11,4 +11,3 @@ future~=1.0.0
 cryptography
 pycryptodome~=3.23.0
 pypresence
-pycrypto
