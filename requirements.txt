@@ -5,7 +5,7 @@ Pillow~=11.0.0
 Requests==2.32.4
 rich==13.7.1
 urllib3==2.5.0
-selenium==4.22.0
+selenium==4.35.0
 webdriver-manager==4.0.2
 future~=1.0.0
 cryptography
