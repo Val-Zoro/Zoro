@@ -2748,6 +2748,19 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+	# Set command line arguments
+	if len(sys.argv) > 1:
+		args = sys.argv
+		for arg in args:
+			if arg.lower() == "--debug":
+				DEBUG = True
+			elif arg.lower() == "--no-rpc":
+				config_main["use_discord_rich_presence"] = "false"
+			elif arg.lower() == "--version":
+				print(f"Valorant Zoro Version: {VERSION}")
+				input()
+				sys.exit(0)
+
 	clear_console()
 	colorama.init(autoreset=True)
 	logger = Logger("Valorant Zoro", "logs/ValorantZoro", ".log")
