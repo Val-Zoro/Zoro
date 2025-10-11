@@ -1441,6 +1441,8 @@ def get_userdata_from_id(user_id: str, host_player_uuid: str | None = None) -> t
 
 @lru_cache(maxsize=128)
 def get_agent_data_from_id(agent_id: str) -> str:
+	if agent_id == "92eeef5d-43b5-1d4a-8d03-b3927a09034b":
+		return "Veto"
 	r = api_request("GET", f"https://valorant-api.com/v1/agents/{agent_id}")
 	agent_name = r.json()["data"]["displayName"]
 	return agent_name
