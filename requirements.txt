@@ -3,7 +3,7 @@ aiohttp==3.12.14
 colorama==0.4.6
 Pillow~=11.3.0
 Requests==2.32.4
-rich==13.7.1
+rich==14.2.0
 urllib3==2.5.0
 selenium==4.22.0
 webdriver-manager==4.0.2
