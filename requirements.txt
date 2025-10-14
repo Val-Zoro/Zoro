@@ -7,7 +7,7 @@ rich==13.7.1
 urllib3==2.5.0
 selenium==4.22.0
 webdriver-manager==4.0.2
-cryptography
+cryptography>=44.0.1
 pycryptodome~=3.23.0
 pypresence
 
