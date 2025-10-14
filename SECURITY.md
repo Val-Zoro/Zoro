@@ -18,10 +18,10 @@ This document explains how to report vulnerabilities, our disclosure process, wh
 ### Our Commitment & Disclosure Timeline
 
 * **Acknowledgement:** within **72 hours** (business days) of receiving your report.
-* **Fix or mitigation:** target **same day** for high/critical, **24/48 hours** for medium, and published alongside the next standard release for low severity issues.
-* **Coordinated disclosure:** we’ll agree on a public disclosure date after a fix/mitigation is available. If active exploitation is observed or risk is extreme, we may accelerate.
+* **Fix or mitigation:** target **same day** for high/critical, **24/48 hours** for medium, and published alongside the next standard release for low-severity issues.
+* **Coordinated disclosure:** we’ll agree on a public disclosure date after a fix/mitigation is available. If active exploitation is observed or risk is extreme, we may speed up.
 
-We’ll keep you updated at key milestones and credit you (with consent) in release notes and the security advisory.
+We’ll keep you updated on key milestones and credit you (with consent) in release notes and the security advisory.
 
 ### Safe Harbor
 
@@ -43,15 +43,15 @@ We support good-faith research and **Safe Harbor** under responsible disclosure:
 
 **Special note on the closed Riot API and credentials**
 
-* Valorant Zoro uses the Riot client or closed Valorant APIs that are only accessible via an authenticated Riot account. We do **not** perform account authorization — Riot client handles all of that. Users must log in through Riot, and credentials are **not** persisted by production builds.
-* Every time the application starts, the user will need to re‑log in through the Riot client. By default, we do not keep the connection open; if Riot client is closed or stops responding, credentials become invalid within \~5 minutes (the exact timer is controlled by Riot and may change). If the user enables the setting to keep the connection alive, Valorant Zoro periodically sends heartbeats to maintain the session.
+* Valorant Zoro uses the Riot client or closed Valorant APIs that are only accessible via an authenticated Riot account. We do **not** perform account authorization — Riot Client handles all of that. Users must log in through Riot, and credentials are **not** persistent.
+* Every time the application starts, the user will need to re‑log in through the Riot client. By default, we do not keep the connection open; if Riot Client is closed or stops responding, credentials become invalid within \~5 minutes (the exact timer is controlled by Riot and may change). If the user enables the setting to keep the connection alive, Valorant Zoro periodically sends heartbeats to maintain the session.
 * Reportable issues include any vulnerability that allows an attacker to: capture those credentials, exfiltrate locally‑accessible match/person data, impersonate the tracker to request additional sensitive data, or hijack the main process to make stealth requests that the user did not intend.
 * Because the API access relies on the user's account, threats include credential theft, process injection/hijacking, malicious builds (e.g., debug builds that persist secrets), and local privilege escalation.
 
 **Out of scope** (unless explicitly noted)
 
 * Third‑party platforms (e.g., GitHub infrastructure, package registries) except where misconfiguration is in this project.
-* Vulnerabilities requiring **root/admin** or physical access to the tester’s own device without a realistic attack path from normal usage.
+* Vulnerabilities require **root/admin** or physical access to the tester’s own device without a realistic attack path from normal usage.
 * Non‑security bugs, UX suggestions, rate‑limit exhaustion, or purely informational findings without demonstrated impact.
 
 ---
@@ -94,7 +94,7 @@ Valorant Zoro may interact with:
     * Store data (items available in shop)
     * In‑game currency balances (Valorant Points, Radianite Points, Kingdom Credits)
   * **Not logged:** payment information (Valorant Zoro has no access to payment methods or billing data).
-* Debug builds are intended for development and troubleshooting only. Users should avoid running debug builds unless necessary, and should treat generated logs as sensitive artifacts.
+* Debug builds are intended for development and troubleshooting only. Users should avoid running debug builds unless necessary and should treat generated logs as sensitive artifacts.
 
 ---
 
@@ -108,7 +108,7 @@ Valorant Zoro may interact with:
 * **Build integrity:**
 
   * CI builds run in least‑privilege environments.
-  * Release artifacts should be reproducible where feasible.
+  * Release artifacts should be reproducible where possible.
   * Sign releases with a maintainer **GPG** or **Sigstore** identity; publish checksums.
 * **Third‑party services:** Keep minimal permissions and rotate tokens regularly.
 
@@ -132,7 +132,7 @@ We use **CVSS v3.1** for severity and consider exploitability, impact, and real�
 1. **Critical:** Credential disclosure, remote code execution, supply‑chain compromise.
 2. **High:** Privilege escalation, authentication bypass, sensitive data exposure.
 3. **Medium:** CSRF/logic flaws with limited impact, path traversal without data exfiltration.
-4. **Low/Informational:** Errors, hardening gaps, missing headers without practical exploit. Low severity issues will still be fixed and published in the next standard release.
+4. **Low/Informational:** Errors, hardening gaps, missing headers without a practical exploit. Low-severity issues will still be fixed and published in the next standard release.
 
 Each advisory will include: affected versions, description, remediation, and acknowledgements.
 
@@ -140,7 +140,7 @@ Each advisory will include: affected versions, description, remediation, and ack
 
 ## Hardening & Secure Development Guidelines
 
-* **Principle of least privilege:** only request permissions strictly necessary to function.
+* **Principle of the least privilege:** only request permissions strictly necessary to function.
 * **Input validation & output encoding:** treat game/API responses as untrusted.
 * **Local file I/O:** avoid writing secrets to disk; prefer memory or encrypted stores.
 * **Logging:** do not log secrets or full tokens; provide redaction.
@@ -153,7 +153,7 @@ Each advisory will include: affected versions, description, remediation, and ack
 
 ## Coordinated Release Process (Maintainer)
 
-1. Receive private report (advisory/email) and acknowledge.
+1. Receive a private report (advisory/email) and acknowledge.
 2. Reproduce, assign CVE (if eligible) via GitHub advisory.
 3. Create a private fix branch; add tests to prevent regression.
 4. Prepare patched release notes including mitigation/workarounds.
