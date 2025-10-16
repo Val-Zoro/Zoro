@@ -1,4 +1,4 @@
-VERSION = "v2.4.5-DEV"
+VERSION = "v2.4.3"
 
 import asyncio
 import threading
@@ -30,7 +30,6 @@ from PIL import Image, ImageTk
 from datetime import datetime, timedelta
 from pypresence import Presence
 from functools import lru_cache
-from collections import deque
 
 from rich.console import Console
 from rich.table import Table
@@ -44,7 +43,7 @@ from tkinter import ttk, messagebox
 console = Console()
 pretty.install()
 
-DEBUG = True
+DEBUG = False
 DEBUG_MODE = False
 SAVE_DATA = False
 
@@ -75,10 +74,10 @@ GAME_MODES = {
 	"hurm": "Team Deathmatch"
 }
 
-CONFIG_FILE = "config.ini"  # Name / Path for the config file
-CLIENT_ID = 1354365908054708388  # For discord RPC
+CONFIG_FILE = "config.ini"
+CLIENT_ID = 1354365908054708388
 
-DEV_PUUID_LIST = ["fe5714d7-344c-5453-90f0-9a72d8bdd947"]  # Private Dev PUUIDs for marking devs in game
+DEV_PUUID_LIST = ["fe5714d7-344c-5453-90f0-9a72d8bdd947"]
 
 
 def create_default_config():
@@ -99,7 +98,7 @@ def create_default_config():
 	with open(CONFIG_FILE, "w") as file:
 		file.write(raw_config_data)
 	console.print(Panel("Default config file created.", style="bold green"))
-	time.sleep(2.5)
+	time.sleep(5)
 
 
 # Create a default config file if it doesn't exist.
@@ -173,9 +172,14 @@ def validate_and_fix_config(config_main):
 		console.print(Panel("Please update the config file to permanently fix the issue!", style="bold yellow"))
 		input("Press enter to continue...")
 
-	if DEBUG:
-		console.print(Panel("Config file validated successfully.", style="bold green"))
-		time.sleep(1)
+
+validate_and_fix_config(config_main)
+
+if DEBUG:
+	console.print(Panel("Config file validated successfully.", style="bold green"))
+	time.sleep(1)
+
+# config_main = {"stats_used_game_mode": "Same", "amount_of_matches_for_player_stats": "10", "debug": False}
 
 DATA_PATH = "data"
 if not os.path.exists(DATA_PATH):
@@ -294,13 +298,10 @@ class Logger:
 
 		# Check if the file needs to be rotated
 		if self._is_file_large(log_filename) or (os.path.exists(log_filename) and (current_time - datetime.fromtimestamp(os.path.getmtime(log_filename))) > self.LOG_TIME_INTERVAL):
-			log_filename = self._get_log_filename(True)  # Ensure a new file name is generated
+			log_filename = self._get_log_filename()  # Ensure new file name is generated
 
 		try:
 			self.__get_sys_hwid()
-
-			if DEBUG:
-				print(self._format_message(level, message))
 
 			if os.path.exists(log_filename):
 				with open(log_filename, "a") as f:
@@ -373,10 +374,9 @@ def handle_rate_limit(response, url, method="GET", headers=None, params=None, da
 	wait_time = get_rate_limit_wait_time(response)
 	if wait_time:
 		if DEBUG:
-			logger.log(4, f"Rate limited! Retrying in {wait_time} seconds...")
+			print(f"Rate limited! Retrying in {wait_time} seconds...")
 		time.sleep(wait_time)
-		# Reuse shared session with timeout
-		return SESSION.request(method, url, params=params, json=json or data, headers=headers, verify=verify, timeout=REQUEST_TIMEOUT)
+		return requests.request(method, url, params=params, json=json or data, headers=headers, verify=verify)
 
 	return response  # No rate limit header, fallback to exponential backoff
 
@@ -404,11 +404,10 @@ def api_request(method, url, params=None, data=None, headers=None, json=None, ve
 		else:
 			print(f"No stored response for {url} - {method}")
 
-	# If not in debug mode, make a real API request
+	# If not in debug mode, make real API request
 	if data is None and json is not None:
 		data = json
-	# Reuse shared session with connection pooling and timeouts
-	response = SESSION.request(method, url, params=params, json=data, headers=headers, verify=verify, timeout=REQUEST_TIMEOUT)
+	response = requests.request(method, url, params=params, json=data, headers=headers, verify=verify)
 
 	if response.status_code == 200:
 		if SAVE_DATA:
@@ -422,7 +421,7 @@ def api_request(method, url, params=None, data=None, headers=None, json=None, ve
 		if response.status_code != 404:
 			logger.log(2, f"API returned '{response.status_code}' from request '{response.url}'\nUsing params: '{str(params)}, Using data/json: {str(data) + ' // ' + str(json)}'\n")
 			if DEBUG:
-				print(f"API Error: {response.status_code}")  # TODO | Make this a log not just a print
+				print(f"API Error: {response.status_code}")
 		return response
 
 
@@ -466,6 +465,9 @@ def create_riot_auth_ssl_ctx() -> ssl.SSLContext:
 			with contextlib.suppress(FileNotFoundError, OSError):
 				libssl = ctypes.CDLL(dll_name)
 				break
+	elif sys.platform.startswith(("linux", "darwin")):
+		libssl = ctypes.CDLL(ssl._ssl.__file__)  # type: ignore
+
 	if libssl is None:
 		raise NotImplementedError(
 			"Failed to load libssl. Your platform or distribution might be unsupported, please open an issue."
@@ -491,7 +493,7 @@ def create_riot_auth_ssl_ctx() -> ssl.SSLContext:
 	return ssl_ctx
 
 
-async def get_user_data_from_riot_client() -> tuple[str, str, str] | None:
+async def get_user_data_from_riot_client():
 	global password, port
 
 	try:
@@ -502,15 +504,11 @@ async def get_user_data_from_riot_client() -> tuple[str, str, str] | None:
 			with open(f"{file_path}\\Riot Games\\Riot Client\\Config\\lockfile", "r") as f:
 				lockfile_data = f.read()
 		except:
-			print("Riot Client isn't logged into an account!")
-			return None
+			print("Riot Client isn't logged into an account!\nRetrying!")
 		# Base 64 encode the password
 		password = b64encode(f"riot:{str(lockfile_data.split(':')[3])}".encode("ASCII")).decode()
 		# Get the port the WS is running on
 		port = str(lockfile_data.split(":")[2])
-
-		return_data = {}
-
 		if password is not None:
 			# Make secure connection with the WS
 			# Get user login tokens
@@ -522,6 +520,7 @@ async def get_user_data_from_riot_client() -> tuple[str, str, str] | None:
 					return_data = r.json()
 			except Exception:
 				print("Please make sure Riot Client is open!")
+				return None
 			return return_data["accessToken"], return_data["token"], return_data["subject"]
 		else:
 			raise Exception("Riot Client Login Password Not Found!")
@@ -529,7 +528,6 @@ async def get_user_data_from_riot_client() -> tuple[str, str, str] | None:
 		print(color_text("Please make sure you are logged into a Riot Account!", Fore.CYAN))
 		traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 		logger.log(1, f"Log In Failed!\nData: {return_data}\nTraceback: {traceback_str}")
-	return None
 
 
 async def log_in() -> bool:
@@ -728,19 +726,15 @@ class ValorantShopChecker:
 						elif item_type_uuid == "de7caa6b-adf7-4588-bbd1-143831e786c6":
 							item_data = api_request("GET", f"https://valorant-api.com/v1/playertitles/{item_uuid}").json()
 						else:
-							item_data = {"data": {"displayName": "null", "displayIcon": ""}}  # FIXME | Replace with an image not null
+							item_data = {"data": {"displayName": "null", "displayIcon": "null"}}  # FIXME | Replace with an image not null
 						#print(item_data)
-						if item_data.get("status", 404) == 200 and item_data.get("data"):
-							item_name: str = item_data["data"]["displayName"]
-							try:
-								item_icon: str = item_data["data"].get("displayIcon")  # TODO | Add fallback image if none
-							except KeyError:
-								item_icon = ""  # TODO | Add fallback image if none
-						else:
-							item_name = "Unknown"
-							item_icon = ""  # TODO | Add fallback image if none
+						item_name: str = item_data["data"]["displayName"]
+						try:
+							item_icon: str = item_data["data"]["displayIcon"]
+						except KeyError:
+							item_icon = ""
 						skin_rarity = []
-						if is_skin and item_data.get("status", 404) == 200:
+						if is_skin:
 							for data in all_skins_data:
 								if data.get("displayName", "").lower() == item_name.lower():
 									tier_uuid = data.get("contentTierUuid", "")
@@ -753,8 +747,7 @@ class ValorantShopChecker:
 											tier_data.get("displayIcon", "")
 										]
 										break
-						else:
-							skin_rarity = ["N/A", "ffffff", ""]
+
 						bundle_items[bundle_uuid].append((item_name, item_icon, item_cost, skin_rarity))
 
 					# Assuming all bundles share the same duration, take the last one
@@ -1378,32 +1371,16 @@ class NotificationManager:
 	def __init__(self):
 		self.notifications = []
 		self.console = console
-		self._recent_notifications = deque()
-		self._recent_lookup = set()
 
 	def has_notifications(self):
-		return len(self.notifications) >= 1
+		if len(self.notifications) >= 1:
+			return True
+		else:
+			return False
 
-	def _prune_recent(self, now: float) -> None:
-		while self._recent_notifications and self._recent_notifications[0][1] <= now:
-			expired_notification, _ = self._recent_notifications.popleft()
-			self._recent_lookup.discard(expired_notification)
-
-	def add_notification(self, notification: str, *, dedupe: bool = False, dedupe_ttl: float = 3.0) -> bool:
+	def add_notification(self, notification: str):
 		"""Add a notification."""
-		if dedupe:
-			now = time.monotonic()
-			self._prune_recent(now)
-			if notification in self._recent_lookup:
-				return False
-			expiry = now + max(dedupe_ttl, 0.0)
-			self._recent_lookup.add(notification)
-			self._recent_notifications.append((notification, expiry))
-			while len(self._recent_notifications) > 128:
-				expired_notification, _ = self._recent_notifications.popleft()
-				self._recent_lookup.discard(expired_notification)
 		self.notifications.insert(0, notification)
-		return True
 
 	def remove_notification(self, notification: str):
 		"""Remove a notification if it exists."""
@@ -1412,9 +1389,7 @@ class NotificationManager:
 
 	def clear_notifications(self):
 		"""Clear all notifications."""
-		self.notifications.clear()
-		self._recent_notifications.clear()
-		self._recent_lookup.clear()
+		self.notifications = []
 
 	def get_display(self):
 		"""
@@ -1422,7 +1397,7 @@ class NotificationManager:
 		The most recent notification appears first.
 		"""
 		if not self.notifications:
-			return None
+			return ""
 
 		# Combine notifications into a single text block
 		content = "\n".join(self.notifications)
@@ -1447,23 +1422,21 @@ def get_userdata_from_id(user_id: str, host_player_uuid: str | None = None) -> t
 	if req.status_code == 200:
 		user_info = req.json()[0]
 		user_name = f"{user_info['GameName']}#{user_info['TagLine']}"
-		is_self = host_player_uuid is not None and user_id == host_player_uuid
-		return user_name, is_self
+		if host_player_uuid is not None:
+			if user_id == host_player_uuid:
+				host_player = f"(You) {user_name}"
+				return host_player, True
+			else:
+				host_player = user_name
+		else:
+			host_player = user_name
 	elif req.status_code == 429:
 		logger.log(2, "Rate Limited | get_userdata_from_id")
 	else:
 		logger.log(1, f"Error in get_userdata_from_id | {req.status_code} | {req.json()}")
 		return "null", False
-	return "null", False
 
-
-SELF_BADGE_RICH = "[bold bright_cyan](You)[/bold bright_cyan]"
-SELF_BADGE_PLAIN = "(You)"
-
-def format_player_label(name: str, is_self: bool, *, rich: bool = True) -> str:
-	if not is_self:
-		return name
-	return f"{SELF_BADGE_RICH} {name}" if rich else f"{SELF_BADGE_PLAIN} {name}"
+	return host_player, False
 
 
 @lru_cache(maxsize=128)
@@ -1628,23 +1601,23 @@ def generate_match_report(match_stats: dict, host_player_uuid: str, compact_mode
 	return "null"
 
 
-@lru_cache(maxsize=10)
+@lru_cache(maxsize=2)
 def get_rank_from_uuid(user_id: str, platform: str = "PC"):
 	if platform == "PC":
 		r = api_request("GET", f"https://pd.na.a.pvp.net/mmr/v1/players/{user_id}/competitiveupdates?queue=competitive", headers=internal_api_headers)
 		try:
-			rank_tier = int(r.json()["Matches"][0]["TierAfterUpdate"])
+			rank_tier = r.json()["Matches"][0]["TierAfterUpdate"]
 		except:
 			return "Unranked"
 	elif platform == "CONSOLE":
 		r = api_request("GET", f"https://pd.na.a.pvp.net/mmr/v1/players/{user_id}/competitiveupdates?queue=console_competitive", headers=internal_api_headers_console)
 		try:
-			rank_tier = int(r.json()["Matches"][0]["TierAfterUpdate"])
+			rank_tier = r.json()["Matches"][0]["TierAfterUpdate"]
 		except:
-			# If the user plays no comp match
+			# If no comp match are played by the user
 			return "Unranked"
 
-	if rank_tier == 0:
+	if str(rank_tier) == "0":
 		rank = "Unranked"
 	else:
 		rank_mapping = {
@@ -1681,19 +1654,16 @@ def get_rank_from_uuid(user_id: str, platform: str = "PC"):
 def create_session():
 	session = requests.Session()
 	retry = Retry(
-		total=2,  # Total number of retries
+		total=5,  # Total number of retries
 		read=5,  # Number of retries on read errors
 		connect=5,  # Number of retries on connection errors
 		backoff_factor=1,  # Backoff factor to apply between attempts
-		status_forcelist=[429, 500, 502, 503, 504],  # Retry on these status codes
+		status_forcelist=[404, 429, 500, 502, 503, 504],  # Retry on these status codes
 	)
 	adapter = HTTPAdapter(max_retries=retry)
+	session.mount('http://', adapter)
 	session.mount('https://', adapter)
 	return session
-
-# Shared HTTP session and default timeouts for efficiency
-REQUEST_TIMEOUT = (5, 15)  # (connect timeout, read timeout)
-SESSION = create_session()
 
 
 @lru_cache(maxsize=256)
@@ -1713,7 +1683,7 @@ def get_match_details(match_id: str, platform: str = "PC"):
 			return None
 
 
-def get_player_data_from_uuid(user_id: str, cache: dict, platform: str = "PC", gamemode: str = None):
+def get_playerdata_from_uuid(user_id: str, cache: dict, platform: str = "PC", gamemode: str = None):
 	kills = 0
 	deaths = 0
 	wins = []
@@ -1736,13 +1706,11 @@ def get_player_data_from_uuid(user_id: str, cache: dict, platform: str = "PC", g
 
 		if response.status_code == 429:
 			logger.log(2, "Rate Limited fetching match history.")
-			backoff = 5
-			attempts = 0
-			while response.status_code == 429 and attempts < 5:
-				time.sleep(backoff)
-				backoff = min(backoff * 2, 30)
-				attempts += 1
+			while True:
+				time.sleep(10)
 				response = api_request("GET", url, headers=headers)
+				if response.status_code != 429:
+					break
 
 		history = response.json().get("History", [])
 		time.sleep(5)
@@ -1775,7 +1743,7 @@ def get_player_data_from_uuid(user_id: str, cache: dict, platform: str = "PC", g
 					kills += match["stats"]["kills"]
 					deaths += match["stats"]["deaths"]
 
-					# agent = get_agent_data_from_id(match["characterId"])  # TODO | Unused
+					agent = get_agent_data_from_id(match["characterId"])  # TODO | Unused
 
 			headshot.append(round(get_headshot_percent(match_data)[str(user_id)]))
 		try:
@@ -1812,13 +1780,14 @@ def get_members_of_party_from_uuid(player_id: str):
 		except Exception as e:
 			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 			logger.log(1, traceback_str)
+			print("Error Logged!")
 
 	if party_id is not None:
 		with api_request("GET", f"https://glz-na-1.na.a.pvp.net/parties/v1/parties/{party_id}", headers=internal_api_headers) as r:
 			party_data = r.json()
 		for member in party_data["Members"]:
-			player_name, is_self = get_userdata_from_id(str(member["Subject"]), val_uuid)
-			player_list.append(format_player_label(player_name, is_self, rich=False))
+			player_name = get_userdata_from_id(str(member["Subject"]))[0]
+			player_list.append(player_name)
 	else:
 		player_list.clear()
 		player_list.append("Player is not in a party. Player could be offline.")
@@ -1826,7 +1795,7 @@ def get_members_of_party_from_uuid(player_id: str):
 
 
 def get_rank_color(rank: str, use_rich_markup: bool = False):
-	"""Return-colored text for a rank, with Radiant being multicolored."""
+	"""Return colored text for a rank, with Radiant being multicolored."""
 	if not use_rich_markup:
 		# Define color codes
 		RANK_COLORS = {
@@ -1883,11 +1852,11 @@ def get_rank_color(rank: str, use_rich_markup: bool = False):
 
 def get_user_current_state(puuid: str, presences_data: dict = None) -> int:
 	"""
-		This function takes a player uuid, Then it translates it the user's current state.
+		This function takes a player uuid, Then it translates it the users current state.
 
 		Parameters:
 		puuid (str): The desired player's UUID.
-		presences_data *Optional* (dict|None): The presence data of the user.
+		presences_data *Optional* (dict|None):  The presence data of the user.
 
 		Returns:
 			int
@@ -1913,37 +1882,28 @@ def get_user_current_state(puuid: str, presences_data: dict = None) -> int:
 			if user["puuid"] == puuid:
 				# Check if the player is playing Valorant. If not, return 0
 				if str(user["product"]).lower() != "valorant":
-					#print(f"State: {0}")
 					return 0
 
 				encoded_user_data: str = user["private"]
 				decoded_user_data = loads(b64decode(encoded_user_data))
-				state = decoded_user_data["matchPresenceData"]["sessionLoopState"]
-				party_state = decoded_user_data["partyPresenceData"]["partyState"]
+				state = decoded_user_data["sessionLoopState"]
+				party_state = decoded_user_data["partyState"]
 				if state == "MENUS":
 					if party_state == "DEFAULT":
-						#print(f"State: {1}")
 						return 1
 					elif party_state == "MATCHMAKING":
-						#print(f"State: {2}")
 						return 2
 					elif party_state == "MATCHMADE_GAME_STARTING":
-						#print(f"State: {3}")
 						return 3
 				elif state == "PREGAME":
-					#print(f"State: {3}")
 					return 3
 				elif state == "INGAME":
-					#print(f"State: {4}")
 					return 4
 				else:
-					#print(f"State: {5}")
 					return 5
 	except Exception as e:
 		traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 		logger.log(1, traceback_str)
-	if DEBUG:
-		print(f"State of {puuid}: {-1}")
 	return -1
 
 
@@ -1965,6 +1925,7 @@ def get_current_game_score(puuid: str) -> tuple[int, int]:
 				enemyTeamScore = decoded_user_data["partyOwnerMatchScoreEnemyTeam"]
 				return allyTeamScore, enemyTeamScore
 	except Exception as e:
+		print("Error (Score Finding) Logged!")
 		traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 		logger.log(1, traceback_str)
 	logger.log(1, f"Returning -1, -1 for current game score!\nData PUUID: {puuid}\n All_User_Data: {all_user_data}\nDecoded_User_Data: {decoded_user_data}")
@@ -2008,10 +1969,6 @@ def get_party_symbol(number: int, use_markup: bool = False) -> str:
 		return coloured_party_symbol
 
 
-DISPATCHED_MATCH_REPORTS: set[str] = set()
-_DISPATCHED_REPORT_ORDER: deque[str] = deque()
-
-
 async def match_report(match_id: str):
 	"""
 		Polls the match details endpoint until the match data is available,
@@ -2026,52 +1983,10 @@ async def match_report(match_id: str):
 		await asyncio.sleep(5)
 
 	# Process the match data to calculate statistics.
-	summary = generate_match_report(match_data, val_uuid, True)
+	summary: str = generate_match_report(match_data, val_uuid, True)
 
 	# Display the notification on the console.
-	if summary and summary != "null":
-		Notification.add_notification(summary, dedupe=True, dedupe_ttl=10.0)
-
-
-def dispatch_match_report_once(match_id: str) -> bool:
-	match_key = str(match_id)
-	if not match_key:
-		return False
-	if match_key in DISPATCHED_MATCH_REPORTS:
-		return False
-
-	DISPATCHED_MATCH_REPORTS.add(match_key)
-	_DISPATCHED_REPORT_ORDER.append(match_key)
-	while len(_DISPATCHED_REPORT_ORDER) > 50:
-		old_id = _DISPATCHED_REPORT_ORDER.popleft()
-		DISPATCHED_MATCH_REPORTS.discard(old_id)
-
-	asyncio.create_task(match_report(match_key))
-	return True
-
-
-LOOP_THROTTLE_INITIAL = 1.0
-LOOP_THROTTLE_MIN = 0.6
-LOOP_THROTTLE_MAX = 2.0
-LOOP_THROTTLE_INCREASE = 0.2
-LOOP_THROTTLE_DECREASE = 0.25
-
-
-class LoopThrottler:
-	"""Adaptive sleep helper for console loops."""
-	def __init__(self, initial: float = LOOP_THROTTLE_INITIAL):
-		self._interval = initial
-
-	def record_iteration(self, state_changed: bool) -> None:
-		if state_changed:
-			# Move interval toward the responsive floor when content updates.
-			self._interval = max(LOOP_THROTTLE_MIN, self._interval - LOOP_THROTTLE_DECREASE)
-		else:
-			# Drift toward the ceiling when nothing meaningful changed.
-			self._interval = min(LOOP_THROTTLE_MAX, self._interval + LOOP_THROTTLE_INCREASE)
-
-	async def sleep(self) -> None:
-		await asyncio.sleep(self._interval)
+	Notification.add_notification(summary)
 
 
 async def run_in_game(cache: dict = None, partys: dict = None):
@@ -2084,16 +1999,16 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 	while True:
 		try:
 			r = api_request("GET", f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}", headers=internal_api_headers)
-			if r.status_code == 200:
+			if r.status_code != 404:
 				match_id = r.json()["MatchID"]
 				break
 			else:
 				if 3 <= get_user_current_state(str(val_uuid)) <= 4:
-					await asyncio.sleep(0.5)
+					pass
 				else:
-					return None
+					return
 		except:
-			await asyncio.sleep(0.5)
+			pass
 
 	got_players = False
 	player_data = {}
@@ -2103,21 +2018,14 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 	if partys is None:
 		partys = {}
 
-	throttler = LoopThrottler()
-	last_signature = None
-	match_report_dispatched = False
-
 	def fetch_player_data(player_id, platform):
 		nonlocal partys, cache
 		with request_semaphore:
-			party_data, cache = get_player_data_from_uuid(player_id, cache, platform)
+			party_data, cache = get_playerdata_from_uuid(player_id, cache, platform)
 			partys = add_parties(partys, party_data)
 		return None
 
 	while True:
-		state_changed = False
-		exit_after_render = False
-		exit_sleep = 0
 		try:
 			# Get match data
 			with api_request("GET", f"https://glz-na-1.na.a.pvp.net/core-game/v1/matches/{match_id}",
@@ -2134,7 +2042,6 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 				map_id = match_data["MapID"]
 				try:
 					gamemode_name = str(match_data["MatchmakingData"]["QueueID"]).capitalize()
-					mode_name = GAME_MODES.get(gamemode_name.lower(), gamemode_name)
 					is_solo = False
 				except TypeError:
 					gamemode_name = match_data["ProvisioningFlow"]
@@ -2146,7 +2053,7 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 				map_name = get_mapdata_from_id(map_id) if not is_solo else "The Range"
 
 				# Build a header string
-				header = f"[green]Map:[/green] {map_name}\n[cyan]Game mode:[/cyan] {mode_name}\n\n"
+				header = f"[green]Map:[/green] {map_name}\n[cyan]Game mode:[/cyan] {gamemode_name}\n\n"
 
 				# (Populate player lists once)
 				if not got_players:
@@ -2228,10 +2135,19 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 				team_blue_panel = Panel(team_blue_str, title="Team Blue", border_style="blue")
 				team_red_panel = Panel(team_red_str, title="Team Red", border_style="red")
 
+				# Get current game score and add to header
 				score = get_current_game_score(val_uuid)
-				render_header = f"{header}[yellow]Score:[/yellow] {score[0]} | {score[1]}\n"
+				header += f"[yellow]Score:[/yellow] {score[0]} | {score[1]}\n"
 
-				scoreboard_lines = []
+				# Clear the console and print header plus side-by-side team panels
+				console.clear()
+				clear_console()
+				console.print(header)
+				console.print(Columns([team_blue_panel, team_red_panel], expand=True, equal=True))
+
+				got_players = True
+
+				# Optionally, fetch match stats and update additional info...
 				try:
 					with api_request("GET", f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}",
 									 headers=internal_api_headers) as re_match_stats:
@@ -2241,50 +2157,21 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 					team_1_rounds = match_stats["teams"][0]["roundsWon"]
 					team_2_rounds = match_stats["teams"][1]["roundsWon"]
 
-					scoreboard_lines.append(f"[yellow]Total Rounds:[/yellow] {total_rounds}")
-					scoreboard_lines.append(f"[yellow]Score:[/yellow] {team_1_rounds}  |  {team_2_rounds}")
+					console.print(f"[yellow]Total Rounds:[/yellow] {total_rounds}")
+					console.print(f"[yellow]Score:[/yellow] {team_1_rounds}  |  {team_2_rounds}")
 
-					if not match_report_dispatched:
-						asyncio.create_task(match_report(match_id))
-						match_report_dispatched = True
-					exit_after_render = True
-					exit_sleep = 3
+					asyncio.create_task(match_report(match_id))
+					await asyncio.sleep(3)
+					return
+
 				except Exception:
 					pass
 
-				render_payload = {
-					"header": render_header,
-					"team_blue": team_blue_str,
-					"team_red": team_red_str,
-					"scoreboard": scoreboard_lines
-				}
-				# Hash the render payload so we only redraw when meaningful data changes.
-				signature = hashlib.sha1(dumps(render_payload, sort_keys=True).encode("utf-8")).hexdigest()
-				state_changed = signature != last_signature
-				if state_changed:
-					last_signature = signature
-					console.clear()
-					clear_console()
-					console.print(render_header, markup=True)
-					console.print(Columns([team_blue_panel, team_red_panel], expand=True, equal=True))
-					for line in scoreboard_lines:
-						console.print(line)
-
-				got_players = True
+				await asyncio.sleep(5)
 
 			else:
-				if not match_report_dispatched:
-					asyncio.create_task(match_report(match_id))
-					match_report_dispatched = True
-				exit_after_render = True
-
-			# Feed throttler with whether we rendered a new frame.
-			throttler.record_iteration(state_changed)
-			if exit_after_render:
-				if exit_sleep:
-					await asyncio.sleep(exit_sleep)
+				asyncio.create_task(match_report(match_id))
 				return
-			await throttler.sleep()
 
 		except KeyboardInterrupt:
 			sys.exit(1)
@@ -2323,23 +2210,23 @@ async def run_pregame(data: dict):
 	player_data = {}
 	threads = []
 	rank_list = {}
+	buffer = StringIO()
+	last_rendered_content = ""
 
 	cache = {}
 	partys = {}
-	throttler = LoopThrottler()
-	last_signature = None
 
 	def fetch_player_data(player_id, platform):
 		nonlocal cache, partys
 		with request_semaphore:
-			party_data, cache = get_player_data_from_uuid(player_id, cache, platform)
+			party_data, cache = get_playerdata_from_uuid(player_id, cache, platform)
 			partys = add_parties(partys, party_data)
 		return None
 
 	while True:
-		state_changed = False
+		buffer.truncate(0)
+		buffer.seek(0)
 		try:
-			buffer = StringIO()
 			with api_request("GET", f"https://glz-na-1.na.a.pvp.net/pregame/v1/matches/{data['MatchID']}",
 							 headers=internal_api_headers) as r:
 				match_data = r.json()
@@ -2356,7 +2243,7 @@ async def run_pregame(data: dict):
 			buffer.write(f"[cyan]Game Mode: {str(gamemode_name).capitalize()}[/cyan]\n")
 			buffer.write(f"[bright_white]{'=' * 30}\n\n[/bright_white]")
 
-			# our_team_colour = match_data["AllyTeam"]["TeamID"]
+			our_team_colour = match_data["AllyTeam"]["TeamID"]
 
 			party_number = 1
 			party_exists = []
@@ -2433,25 +2320,19 @@ async def run_pregame(data: dict):
 			got_rank = True
 			buffer.write(
 				f"[red]Enemy team: {match_data['EnemyTeamLockCount']}/{match_data['EnemyTeamSize']} LOCKED[/red]\n")
-			transitioning = False
 			if match_data["PhaseTimeRemainingNS"] == 0:
 				buffer.write(f"[cyan]In Loading Phase[/cyan]\n")
-				transitioning = True
-
-			render_output = buffer.getvalue()
-			# Hash the panel content so we only redraw when the payload changes.
-			signature = hashlib.sha1(render_output.encode("utf-8")).hexdigest()
-			if signature != last_signature:
-				state_changed = True
-				last_signature = signature
-				clear_console()
-				console.print(render_output, markup=True)
-
-			# Feed the adaptive throttler (flagging transitions as changes).
-			throttler.record_iteration(state_changed or transitioning)
-			if transitioning:
 				break
-			await throttler.sleep()
+
+			current_rendered_content = buffer.getvalue()
+
+			# Only update the screen if content has changed
+			if current_rendered_content != last_rendered_content:
+				clear_console()
+				console.print(current_rendered_content, markup=True)
+				last_rendered_content = current_rendered_content
+
+			time.sleep(0.5)
 		except KeyboardInterrupt:
 			sys.exit(1)
 		except KeyError:
@@ -2484,13 +2365,10 @@ async def toggle_ready_state(party_id: str, is_ready: bool):
 			print(f"Ready state set to: {is_ready}")
 			return True
 		else:
-			print(f"Failed to toggle ready state")
-			logger.log(2, f"Failed to toggle ready state. Status Code: {response.status_code}, Response: {response.text}")
+			print(f"Failed to toggle ready state: {response.status_code} - {response.text}")
 			return False
 	except Exception as e:
-		print(f"Failed to toggle ready state")
-		if DEBUG:
-			logger.log(2, f"Failed to toggle ready state. Error: {e}")
+		print(f"Error while toggling ready state: {e}")
 		return False
 
 
@@ -2510,7 +2388,7 @@ def quit_game():
 
 async def listen_for_input(party_id: str):
 	is_ready = True  # Start with the default ready state
-	print("Enter a command: ")
+	print("Press 'r' to toggle ready state or 'q' to quit.")
 
 	while True:
 		try:
@@ -2520,6 +2398,9 @@ async def listen_for_input(party_id: str):
 			if user_input == "r":
 				is_ready = not is_ready
 				await toggle_ready_state(party_id, is_ready)
+			elif user_input == "q":
+				print("Exiting input listener...")
+				break
 			elif user_input.lower() in ["cls", "clear"]:
 				clear_console()
 			elif "party" in user_input.lower():
@@ -2529,31 +2410,12 @@ async def listen_for_input(party_id: str):
 				await get_party()
 			elif "store" in user_input.lower():
 				await ValorantShop.run()
-			elif user_input.lower() in ["quit", "leave"]:
-				print("Leaving game...")
+			elif "leave" in user_input.lower():
+				print("Leaving")
 				quit_game()
-			elif user_input.lower() in ["friends", "friend", "f"]:
-				clear_console()
-				print("Fetching friend states...")
-				friend_states = await get_friend_states()
-				if friend_states:
-					print("\n".join(friend_states))
-				else:
-					print("No friends found or unable to fetch friend states.")
-			elif user_input.lower() in ["help", "h", "?"]:
-				table = Table(show_header=False, box=None, show_lines=True, row_styles=["red", "dim"])
-				table.add_row("r", "Toggle Ready State", end_section=True)
-				table.add_row("clear/cls", "Clear Console", end_section=True)
-				table.add_row("party", "Show Party Details", end_section=True)
-				table.add_row("store", "Open Valorant Store Interface", end_section=True)
-				table.add_row("quit/leave", "Quit Current Game", end_section=True)
-				table.add_row("friends/f", "Show Friend States", end_section=True)
-				table.add_row("help/h/?", "Show This Help Message", end_section=True)
-				console.print(table, style="cyan")
 			if DEBUG:
 				if user_input.lower()[0] == "-":
-					pass
-
+					exec(user_input[1::])
 
 		except Exception as e:
 			print(f"Error in input listener: {e}")
@@ -2569,19 +2431,10 @@ async def get_friend_states() -> list[str]:
 			data = r.json()
 		all_user_data = data["presences"]
 		for user in all_user_data:
-			if user["activePlatform"] is not None and user["private"] is not None:
+			if user["activePlatform"] is not None:
 				if str(user["puuid"]) != str(val_uuid):
 					state = get_user_current_state(user["puuid"], data)
-					"""
-					-1: Error
-					0: Not in Valorant
-					1: In Menus
-					2: In Menus Queueing
-					3: Pregame
-					4: In-Game
-					5: Unknown State
-					"""
-					state_str = "In Menu" if state == 1 else "Queueing" if state == 2 else "Pre-game" if state == 3 else "In-game" if state == 4 else "Unknown-4" if state == 5 else "Unknown-5"
+					state_str = "In Menu" if state == 1 else "Queueing" if state == 2 else "Pre-game" if state == 3 else "In-game"
 					full_str = f"{user['game_name']}#{user['game_tag']}: {state_str}"
 					friend_list.append(full_str)
 	except Exception:
@@ -2601,7 +2454,7 @@ async def get_party(got_rank: dict = None):
 
 	logger.log(3, "Loading Party... ")
 
-	if config_main.get("use_discord_rich_presence", "").lower() == "true":
+	if config_main.get("use_discord_rich_presence"):
 		RPC.connect()
 		RPC.update(
 			state="In Menu",
@@ -2622,15 +2475,14 @@ async def get_party(got_rank: dict = None):
 			buffer.seek(0)
 
 			# Build the dynamic party section.
-			message_list = ["[cyan]----- Party -----[/cyan]\n"]
+			message_list = [color_text("----- Party -----\n", Fore.CYAN)]
 			party_id = await fetch_party_id()
 
 			if party_id:
-				party_data = await fetch_party_data(party_id)
-
 				if input_task is None or input_task.done():
 					input_task = asyncio.create_task(listen_for_input(party_id))
 
+				party_data = await fetch_party_data(party_id)
 				message_list.extend(parse_party_data(party_data, got_rank))
 				party_section = "".join(message_list)
 
@@ -2642,10 +2494,10 @@ async def get_party(got_rank: dict = None):
 				if new_screen_content != last_rendered_content:
 					clear_console()
 					console.print(Notification.get_display(), markup=True)
-					console.print("\n" + party_section, markup=True)
+					print("\n" + party_section)
 					last_rendered_content = new_screen_content
 
-				await asyncio.sleep(0.5)
+				await asyncio.sleep(0.25)
 			else:
 				render_no_party_message(buffer, last_rendered_content)
 				await asyncio.sleep(3.5)
@@ -2684,29 +2536,29 @@ def parse_party_data(party_data, got_rank):
 	messages = []
 	is_queueing = party_data.get("State")
 	if is_queueing == "MATCHMAKING":
-		messages.append("[yellow]Queueing![/yellow]\n")
+		messages.append(color_text("Queueing!\n", Fore.YELLOW))
 
 	game_mode = str(party_data.get("MatchmakingData", {}).get("QueueID", "Unknown")).lower()
 	game_mode = GAME_MODES.get(game_mode.lower(), str(game_mode))
-	messages.append(f"[green]Mode: {game_mode}[/green]\n\n")
+	messages.append(color_text(f"Mode: {game_mode.capitalize()}\n\n", Fore.GREEN))
 
 	for member in party_data.get("Members", []):
 		player_name, is_user = get_userdata_from_id(str(member["Subject"]), val_uuid)
 		if member["Subject"] in DEV_PUUID_LIST:
-			player_name += " [hot_pink][[/hot_pink][red]DEV[/red][hot_pink]][/hot_pink]"
+			player_name += " [DEV]"
 		is_leader = member.get("IsOwner", False)
 		player_lvl = member["PlayerIdentity"].get("AccountLevel", "-1")
 
-		color = "yellow" if is_user else ("bright_red" if is_leader else "white")
+		color = Fore.YELLOW if is_user else (Fore.LIGHTRED_EX if is_leader else Fore.WHITE)
 		leader_text = "[Leader] " if is_leader else ""
 
 		if member["Subject"] not in got_rank:
-			player_rank_str = get_rank_color(get_rank_from_uuid(str(member['Subject'])), True)
+			player_rank_str = get_rank_color(get_rank_from_uuid(str(member['Subject'])))
 			got_rank[str(member["Subject"])] = player_rank_str
 		else:
 			player_rank_str = got_rank[str(member["Subject"])]
 
-		messages.append(f"[{color}]{leader_text}[LVL {player_lvl}] {player_name} {player_rank_str}[/{color}]\n")
+		messages.append(color_text(f"{leader_text}[LVL {player_lvl}] {player_name} {player_rank_str}\n", color))
 	return messages
 
 
@@ -2752,7 +2604,7 @@ async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 				await log_in()
 			else:
 				# Not in pre-game error?
-				await asyncio.sleep(1)
+				time.sleep(1)
 		except Exception as e:
 			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 			logger.log(1, f"Error: {traceback_str}")
@@ -2866,11 +2718,11 @@ async def main() -> None:
 								if await get_party() == -1:
 									break
 							else:
-								await asyncio.sleep(2.5)
+								time.sleep(2.5)
 								console.clear()
 					else:
 						console.print("[bold red]Invalid input. Please try again.[/bold red]")
-						await asyncio.sleep(1.5)
+						time.sleep(1.5)
 				else:
 					while True:
 						logged_in = await log_in()
@@ -2879,7 +2731,7 @@ async def main() -> None:
 							logger.log(4, "Calling get_party from auto-main")
 							await get_party()
 						else:
-							await asyncio.sleep(2.5)
+							time.sleep(2.5)
 							console.clear()
 			except KeyboardInterrupt:
 				console.print("[bold yellow]Exiting...[/bold yellow]")
@@ -2891,10 +2743,10 @@ async def main() -> None:
 				traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 				logger.log(1, traceback_str)
 				console.print(f"[bold red]An Error Has Happened![/bold red]\n{traceback_str}")
-				await asyncio.sleep(2)
+				time.sleep(2)
 	else:
 		console.print("[bold red]Failed to log in. Retrying in 5 seconds...[/bold red]")
-	await asyncio.sleep(5)
+		time.sleep(5)
 
 
 if __name__ == "__main__":
@@ -2913,13 +2765,8 @@ if __name__ == "__main__":
 
 	clear_console()
 	colorama.init(autoreset=True)
-	logger = Logger("Zoro", "logs/Zoro", ".log")
+	logger = Logger("Valorant Zoro", "logs/ValorantZoro", ".log")
 	logger.load_public_key(pub_key)
-
-	if DEBUG:
-		logger.log(4, "Debug mode enabled")
-
-	validate_and_fix_config(config_main)
 
 	while True:
 		try:

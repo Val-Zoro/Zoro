@@ -11,8 +11,3 @@ future~=1.0.0
 cryptography
 pycryptodome~=3.23.0
 pypresence
-
-PyQt5>=5.15.11
-WMI>=1.5.1
-beautifulsoup4>=4.13.4
-textual>=0.10.0
