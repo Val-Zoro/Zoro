@@ -1,0 +1,13 @@
+PyQt5>=5.15.11
+requests>=2.32.3
+colorama>=0.4.6
+pycryptodome>=3.20.0
+WMI>=1.5.1
+future>=1.0.0
+rich>=13.7.1
+pillow>=11.0.0
+pypresence>=4.3.0
+beautifulsoup4>=4.13.4
+aioconsole>=0.7.1
+urllib3>=2.5.0
+pyhidapi>=0.0.2
