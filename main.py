@@ -1,4 +1,4 @@
-VERSION = "v2.5.0-DEV"
+VERSION = "v2.5.0"
 
 import asyncio
 import threading
