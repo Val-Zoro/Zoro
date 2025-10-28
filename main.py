@@ -32,6 +32,7 @@ from urllib3 import disable_warnings
 from PIL import Image, ImageTk
 from datetime import datetime, timedelta
 from pypresence import Presence
+from contextlib import suppress
 from functools import lru_cache
 from collections import deque
 from dataclasses import dataclass
@@ -73,6 +74,17 @@ MAX_CONCURRENT_REQUESTS = 2
 request_semaphore = threading.Semaphore(MAX_CONCURRENT_REQUESTS)
 
 input_task = None
+
+
+async def stop_input_listener() -> None:
+        """Cancel the active input listener task if one is running."""
+        global input_task
+
+        if input_task is not None and not input_task.done():
+                input_task.cancel()
+                with suppress(asyncio.CancelledError):
+                        await input_task
+        input_task = None
 
 GAME_MODES = {
 	"unrated": "Unrated",
@@ -3599,6 +3611,8 @@ async def listen_for_input(party_id: str):
 					pass
 
 
+		except asyncio.CancelledError:
+			break
 		except Exception as e:
 			console.print(f"Error in input listener: {e}")
 			break
@@ -3706,6 +3720,7 @@ async def get_party(got_rank: dict = None):
 				await asyncio.sleep(0.5)
 			else:
 				render_no_party_message(buffer, last_rendered_content)
+				await stop_input_listener()
 				await asyncio.sleep(3.5)
 				return -1
 		except KeyboardInterrupt:
