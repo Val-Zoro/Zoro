@@ -1,55 +1,52 @@
-VERSION = "v2.5.0"
+VERSION = "v2.5.0-DEV"
 
+import argparse
 import asyncio
+import configparser
+import hashlib
+import os
+import sys
 import threading
 import time
-import os
-import traceback
-import sys
-import colorama
-import requests
-import hashlib
 import tkinter
-import argparse
-import nest_asyncio
-import configparser
-
-from math import tanh
-from typing import Any, Dict, Optional, Tuple, List, Callable, Mapping, Sequence
+import traceback
+from base64 import b64encode, b64decode
+from collections import deque
+from contextlib import suppress
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from functools import lru_cache
+from io import StringIO
 from json import dump, dumps, loads, load
+from math import tanh
+from pathlib import Path
 from platform import system, version
+from tkinter import ttk, messagebox
+from typing import Any, Dict, Optional, Tuple, List, Callable, Mapping, Sequence
+
+import colorama
+import nest_asyncio
+import requests
+from Crypto.Cipher import PKCS1_OAEP, AES
 # from wmi import WMI | Removed to avoid dependency issues on non-Windows systems
 from Crypto.PublicKey import RSA
-from Crypto.Cipher import PKCS1_OAEP, AES
 from Crypto.Random import get_random_bytes
 from Crypto.Util.Padding import pad
-from base64 import b64encode, b64decode
-from io import StringIO
-from colorama import Fore, Style
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry  # noqa | Ignore, should work fine
-from urllib3 import disable_warnings
 from PIL import Image, ImageTk
-from datetime import datetime, timedelta
+from colorama import Fore, Style
 from pypresence import Presence
-from contextlib import suppress
-from functools import lru_cache
-from collections import deque
-from dataclasses import dataclass
-from pathlib import Path
-
-
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
+from requests.adapters import HTTPAdapter
 from rich import pretty
-from rich.text import Text
+from rich.align import Align
 from rich.columns import Columns
-
+from rich.console import Console
 from rich.live import Live
+from rich.panel import Panel
 from rich.spinner import Spinner
-
-from tkinter import ttk, messagebox
+from rich.table import Table
+from rich.text import Text
+from urllib3 import disable_warnings
+from urllib3.util.retry import Retry  # noqa | Ignore, should work fine
 
 console = Console()
 pretty.install()
@@ -57,6 +54,8 @@ pretty.install()
 DEBUG = False
 DEBUG_MODE = False
 SAVE_DATA = False
+OFFLINE_MODE = False
+CLI_DEBUG_OVERRIDE = False
 
 val_token = ""
 val_access_token = ""
@@ -70,21 +69,114 @@ internal_api_headers_console = {}
 password = ""
 port = ""
 
+DEFAULT_MENU_ACTION = "manual"
+SETUP_COMPLETED = False
+VALID_MENU_ACTIONS = {"manual", "shop", "loader"}
+DISCLAIMER_LINES = (
+	"Valorant Zoro is a community-maintained client that is not endorsed by Riot Games.",
+	"Use of automation or private APIs may violate Riot's terms of service and can lead to account action.",
+	"Never share authentication tokens, cookies, or log files that contain personal information.",
+	"You accept full responsibility for how you use this software.",
+)
+
 MAX_CONCURRENT_REQUESTS = 2
 request_semaphore = threading.Semaphore(MAX_CONCURRENT_REQUESTS)
 
+PlayerStatsTuple = tuple[Any, list[str], Any, Any]
+PLAYER_STATS_CACHE: dict[str, PlayerStatsTuple] = {}
+PLAYER_STATS_PARTY_CACHE: dict[str, dict[str, list[str]]] = {}
+PLAYER_STATS_CACHE_EXPIRY: dict[str, float] = {}
+PLAYER_STATS_CACHE_TTL = 300  # seconds to reuse prefetched stats between views
+
 input_task = None
+
+ASYNC_EXCEPTION_HANDLER: Optional[
+	Callable[[asyncio.AbstractEventLoop, Dict[str, Any]], None]
+] = None
+
+
+def _prompt_bool(question: str, default: bool) -> bool:
+	"""Prompt the user for a yes/no question with a default."""
+	if not sys.stdin or not sys.stdin.isatty():
+		return default
+
+	default_text = "Y/n" if default else "y/N"
+	while True:
+		response = input(f"{question} [{default_text}]: ").strip().lower()
+		if not response:
+			return default
+		if response in {"y", "yes"}:
+			return True
+		if response in {"n", "no"}:
+			return False
+		console.print("[bold yellow]Please answer with yes or no.[/bold yellow]")
+
+
+def _prompt_choice(question: str, choices: Mapping[str, str], default_key: str) -> str:
+	"""
+	Prompt the user to choose from a mapping of keys to descriptions.
+
+	Args:
+		question: Text describing what is being selected.
+		choices: Mapping of valid input -> human-readable label.
+		default_key: Key to use when user presses enter.
+	"""
+	if not sys.stdin or not sys.stdin.isatty():
+		return default_key
+
+	options_display = ", ".join(f"{key} ({label})" for key, label in choices.items())
+	prompt_text = f"{question} [{default_key}]: "
+	console.print(f"{question}\n  {options_display}")
+
+	while True:
+		response = input(prompt_text).strip().lower()
+		if not response:
+			return default_key
+		if response in choices:
+			return response
+		console.print("[bold yellow]Select one of the listed options.[/bold yellow]")
+
+
+def _prompt_int(question: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+	"""Prompt the user for an integer value with optional bounds."""
+	if not sys.stdin or not sys.stdin.isatty():
+		return default
+
+	range_hint = ""
+	if minimum is not None and maximum is not None:
+		range_hint = f" ({minimum}-{maximum})"
+	elif minimum is not None:
+		range_hint = f" (>= {minimum})"
+	elif maximum is not None:
+		range_hint = f" (<= {maximum})"
+
+	while True:
+		response = input(f"{question}{range_hint} [{default}]: ").strip()
+		if not response:
+			return default
+		try:
+			value = int(response)
+		except ValueError:
+			console.print("[bold yellow]Enter a whole number.[/bold yellow]")
+			continue
+		if minimum is not None and value < minimum:
+			console.print(f"[bold yellow]Value must be at least {minimum}.[/bold yellow]")
+			continue
+		if maximum is not None and value > maximum:
+			console.print(f"[bold yellow]Value must be at most {maximum}.[/bold yellow]")
+			continue
+		return value
 
 
 async def stop_input_listener() -> None:
-        """Cancel the active input listener task if one is running."""
-        global input_task
+	"""Cancel the active input listener task if one is running."""
+	global input_task
 
-        if input_task is not None and not input_task.done():
-                input_task.cancel()
-                with suppress(asyncio.CancelledError):
-                        await input_task
-        input_task = None
+	if input_task is not None and not input_task.done():
+		input_task.cancel()
+		with suppress(asyncio.CancelledError):
+			await input_task
+	input_task = None
 
 GAME_MODES = {
 	"unrated": "Unrated",
@@ -93,14 +185,15 @@ GAME_MODES = {
 	"spikerush": "Spikerush",
 	"deathmatch": "Deathmatch",
 	"ggteam": "Escalation",
-	"hurm": "Team Deathmatch"
+	"hurm": "Team Deathmatch",
+	"premier-seasonmatch": "Premier"
 }
 
 CONFIG_FILE = "config.ini"  # Name / Path for the config file
 CLIENT_ID = 1354365908054708388  # For discord RPC
 
-DEV_PUUID_LIST = ["fe5714d7-344c-5453-90f0-9a72d8bdd947"]  # Private Dev PUUIDs for marking devs in-game
-
+# ROLES_ID = "LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1DNENBUUF3QlFZREsyVndCQ0lFSUwzWXZkQ0YvZjd5MzdwMFJJem5GZElob2ZiS0VSQ2Yza0lNQ29qNjhUYVcKLS0tLS1FTkQgUFJJVkFURSBLRVktLS0tLQ=="
+ROLE_URL = "aHR0cHM6Ly9naXN0LmdpdGh1YnVzZXJjb250ZW50LmNvbS9TYXVjeXdhbi80MzgyODA1MzgyMDk3OThjMDBkNjE5MGRhYjlmN2ZlZS9yYXcv"
 
 DATA_PATH = "data"
 if not os.path.exists(DATA_PATH):
@@ -132,13 +225,12 @@ class Logger:
 		self.file_name = file_name
 		self.file_ending = file_ending
 
-		self.VERSION = "v1.6.5"
+		self.VERSION = "v1.7.5"
 
-		self.LEVELS = {1: f"Error",
-					   2: f"Warning",
-					   3: f"Info",
-					   4: f"Debug"}
-		self.MAX_FILE_SIZE = 1 * 1024 * 1024  # 1MB
+		self.LEVELS = {1: "Error",
+		               2: "Warning",
+		               3: "Info",
+		               4: "Debug"}
 		self.LOG_TIME_INTERVAL = timedelta(days=1)  # 1 day
 
 		self.key = None
@@ -153,17 +245,17 @@ class Logger:
 		try:
 			cipher_rsa = PKCS1_OAEP.new(self.key)
 		except Exception:
-			raise (ValueError(f"[Logger] Public key not loaded, cannot encrypt log message."))
+			raise ValueError("[Logger] Public key not loaded, cannot encrypt log message.")
 
 		aes_key = get_random_bytes(16)
 
 		cipher_aes = AES.new(aes_key, AES.MODE_CBC)
 
-		encrypted_message = cipher_aes.encrypt(pad(message.encode('utf-8'), AES.block_size))
+		encrypted_message = cipher_aes.encrypt(pad(message.encode("utf-8"), AES.block_size))
 
 		encrypted_aes_key = cipher_rsa.encrypt(aes_key)
 
-		encrypted_message = b64encode(encrypted_aes_key + cipher_aes.iv + encrypted_message).decode('utf-8')
+		encrypted_message = b64encode(encrypted_aes_key + cipher_aes.iv + encrypted_message).decode("utf-8")
 
 		return encrypted_message
 
@@ -171,20 +263,62 @@ class Logger:
 	def _timestamp():
 		return datetime.now()
 
-	def _format_message(self, level: int, message: str) -> str:
+	@staticmethod
+	def _coerce_value(value: Any) -> Any:
+		if isinstance(value, (str, int, float, bool)) or value is None:
+			return value
+		if isinstance(value, (list, tuple, set)):
+			return [Logger._coerce_value(item) for item in value]
+		if isinstance(value, dict):
+			return {str(key): Logger._coerce_value(val) for key, val in value.items()}
+		return repr(value)
+
+	def _serialize_context(self, context: Mapping[str, Any]) -> str:
+		try:
+			sanitized = {str(key): self._coerce_value(val) for key, val in context.items()}
+			return dumps(sanitized, ensure_ascii=True, default=repr)
+		except Exception:
+			return repr(context)
+
+	@staticmethod
+	def _format_exception_info(exc_info: Any) -> Optional[str]:
+		if exc_info is None:
+			return None
+
+		if isinstance(exc_info, BaseException):
+			return "".join(traceback.format_exception(type(exc_info), exc_info, exc_info.__traceback__))
+
+		if isinstance(exc_info, tuple) and len(exc_info) == 3:
+			exc_type, exc_value, exc_tb = exc_info
+			return "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+
+		return repr(exc_info)
+
+	def _format_message(self, level: int, message: str, context: Optional[Mapping[str, Any]] = None,
+	                    exc_info: Optional[Any] = None) -> str:
 		level_name = self.LEVELS.get(level, "Unknown")
 		timestamp_str = self._timestamp().strftime("%Y-%m-%d %H:%M:%S")
-		return f"{timestamp_str} - {level_name}: {message}"
 
-	def _get_log_filename(self, hit_mix_size: bool = False) -> str:
+		details: List[str] = []
+		if message:
+			details.append(message)
+
+		if context:
+			context_payload = self._serialize_context(context)
+			details.append(f"context={context_payload}")
+
+		exc_text = self._format_exception_info(exc_info)
+		if exc_text:
+			details.append(f"exception=\n{exc_text}")
+
+		details.append(f"thread={threading.current_thread().name}")
+
+		formatted_body = "\n".join(details)
+		return f"{timestamp_str} - {level_name}: {formatted_body}"
+
+	def _get_log_filename(self) -> str:
 		now = self._timestamp()
-		if not hit_mix_size:
-			return f"{self.file_name}_{now.strftime('%Y-%m-%d')}{self.file_ending}"
-		else:
-			return f"{self.file_name}_{now.strftime('%Y-%m-%d-%H%M%S')}{self.file_ending}"
-
-	def _is_file_large(self, full_log_file_name: str) -> bool:
-		return os.path.exists(full_log_file_name) and os.path.getsize(full_log_file_name) >= self.MAX_FILE_SIZE
+		return f"{self.file_name}_{now.strftime('%Y-%m-%d')}{self.file_ending}"
 
 	def _log_file_header(self):
 		return (f"\n"
@@ -205,7 +339,8 @@ class Logger:
 	def load_public_key(self, key: str):
 		self.key = RSA.import_key(key)
 
-	def log(self, level: int, message: str) -> int:
+	def log(self, level: int, message: str, *, context: Optional[Mapping[str, Any]] = None,
+	        exc_info: Optional[Any] = None) -> int:
 		if level not in self.LEVELS:
 			return -1  # Invalid level
 
@@ -218,17 +353,15 @@ class Logger:
 				os.mkdir(file_path)
 
 		# Check if the file needs to be rotated
-		if self._is_file_large(log_filename):
-			log_filename = self._get_log_filename(True)
-		elif os.path.exists(log_filename) and (
+		if os.path.exists(log_filename) and (
 				current_time - datetime.fromtimestamp(os.path.getmtime(log_filename))) > self.LOG_TIME_INTERVAL:
-			log_filename = self._get_log_filename(False)
+			log_filename = self._get_log_filename()
 
 		try:
 			self.__get_sys_hwid()
 
-			# Prepare formatted message once
-			_formatted = self._format_message(level, message)
+			# Prepare a formatted message once
+			_formatted = self._format_message(level, message, context=context, exc_info=exc_info)
 
 			if DEBUG:
 				console.print(_formatted)
@@ -246,6 +379,74 @@ class Logger:
 			return -2  # File I/O error
 
 		return 1  # Success
+
+	def debug(self, message: str, *, context: Optional[Mapping[str, Any]] = None) -> int:
+		return self.log(4, message, context=context)
+
+	def info(self, message: str, *, context: Optional[Mapping[str, Any]] = None) -> int:
+		return self.log(3, message, context=context)
+
+	def warning(self, message: str, *, context: Optional[Mapping[str, Any]] = None) -> int:
+		return self.log(2, message, context=context)
+
+	def error(self, message: str, *, context: Optional[Mapping[str, Any]] = None,
+	          exc_info: Optional[Any] = None) -> int:
+		return self.log(1, message, context=context, exc_info=exc_info)
+
+	def log_exception(self, message: str, exception: BaseException,
+	                  *, context: Optional[Mapping[str, Any]] = None, level: int = 1) -> int:
+		return self.log(level, message, context=context, exc_info=exception)
+
+
+def install_global_exception_handlers(app_logger: Logger) -> None:
+	"""Ensure uncaught exceptions surface in encrypted logs for diagnostics."""
+	global ASYNC_EXCEPTION_HANDLER
+
+	def handle_exception(exc_type, exc_value, exc_traceback):
+		if issubclass(exc_type, KeyboardInterrupt):
+			sys.__excepthook__(exc_type, exc_value, exc_traceback)
+			return
+		app_logger.error(
+			"Unhandled exception in main thread",
+			context={"source": "sys.excepthook"},
+			exc_info=(exc_type, exc_value, exc_traceback),
+		)
+
+	sys.excepthook = handle_exception
+
+	def threading_exception_handler(args):
+		if issubclass(args.exc_type, KeyboardInterrupt):
+			return
+		app_logger.error(
+			"Unhandled exception in background thread",
+			context={"thread": getattr(args.thread, "name", "unknown")},
+			exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+		)
+
+	threading.excepthook = threading_exception_handler
+
+	def handle_asyncio_exception(loop: asyncio.AbstractEventLoop, context: Dict[str, Any]) -> None:
+		context_payload = {key: repr(value) for key, value in context.items() if key != "exception"}
+		app_logger.error(
+			"Unhandled exception in asyncio task",
+			context={"loop_id": id(loop), **context_payload},
+			exc_info=context.get("exception"),
+		)
+
+	ASYNC_EXCEPTION_HANDLER = handle_asyncio_exception
+
+	try:
+		loop = asyncio.get_running_loop()
+	except RuntimeError:
+		loop = None
+
+	if loop is not None:
+		loop.set_exception_handler(handle_asyncio_exception)
+	else:
+		app_logger.debug(
+			"Asyncio loop not running during handler install; handler will be attached when loop starts.",
+			context={"thread": threading.current_thread().name},
+		)
 
 
 class FakeResponse:
@@ -305,7 +506,10 @@ def handle_rate_limit(response, url, method="GET", headers=None, params=None, da
 	wait_time = get_rate_limit_wait_time(response)
 	if wait_time:
 		if DEBUG:
-			logger.log(4, f"Rate limited! Retrying in {wait_time} seconds...")
+			logger.debug(
+				"Rate limited while contacting Riot API",
+				context={"retry_in_seconds": wait_time, "url": url, "method": method},
+			)
 		time.sleep(wait_time)
 		# Reuse a shared session with timeout
 		return SESSION.request(method, url, params=params, json=json or data, headers=headers, verify=verify,
@@ -354,8 +558,18 @@ def api_request(method, url, params=None, data=None, headers=None, json=None, ve
 		return handle_rate_limit(response, url, method, headers, params, data, json, verify)
 	else:
 		if response.status_code != 404:
-			logger.log(2,
-					   f"API returned '{response.status_code}' from request '{response.url}'\nUsing params: '{str(params)}, Using data/json: {str(data) + ' // ' + str(json)}'\n")
+			error_context = {
+				"status_code": response.status_code,
+				"url": response.url,
+				"method": method,
+				"params": repr(params),
+				"payload": repr(data if data is not None else json),
+			}
+			try:
+				error_context["response_preview"] = response.text[:400]
+			except Exception:
+				error_context["response_preview"] = "<unavailable>"
+			logger.warning("API request returned non-success status", context=error_context)
 			if DEBUG:
 				console.print(f"API Error: {response.status_code}")
 		return response
@@ -371,42 +585,71 @@ def save_response(file_path, data):
 async def get_user_data_from_riot_client() -> tuple[str, str, str] | None:
 	global password, port
 
-	try:
+	return_data: Dict[str, Any] = {}
 
-		# get lockfile password
+	try:
 		file_path = os.getenv("localappdata")
+		lockfile_path = f"{file_path}\\Riot Games\\Riot Client\\Config\\lockfile"
 		try:
-			with open(f"{file_path}\\Riot Games\\Riot Client\\Config\\lockfile", "r") as f:
+			with open(lockfile_path, "r") as f:
 				lockfile_data = f.read()
-		except:
+		except Exception as lockfile_error:
 			console.print("Riot Client isn't logged into an account!")
+			logger.error(
+				"Failed to read Riot Client lockfile",
+				context={"lockfile_path": lockfile_path},
+				exc_info=lockfile_error,
+			)
 			return None
-		# Base 64 encode the password
+
 		password = b64encode(f"riot:{str(lockfile_data.split(':')[3])}".encode("ASCII")).decode()
-		# Get the port the WS is running on
 		port = str(lockfile_data.split(":")[2])
 
-		return_data = {}
+		if password is None:
+			raise ValueError("Riot Client login password not found")
 
-		if password is not None:
-			# Make secure connection with the WS
-			# Get user login tokens
-			try:
-				with api_request("GET",
-								 f"https://127.0.0.1:{port}/entitlements/v1/token",
-								 headers={"authorization": f"Basic {password}", "accept": "*/*",
-										  "Host": f"127.0.0.1:{port}"}, verify=False
-								 ) as r:
-					return_data = r.json()
-			except Exception:
-				console.print("Please make sure Riot Client is open!")
-			return return_data["accessToken"], return_data["token"], return_data["subject"]
-		else:
-			raise Exception("Riot Client Login Password Not Found!")
+		try:
+			with api_request(
+					"GET",
+					f"https://127.0.0.1:{port}/entitlements/v1/token",
+					headers={
+						"authorization": f"Basic {password}",
+						"accept": "*/*",
+						"Host": f"127.0.0.1:{port}",
+					},
+					verify=False,
+			) as r:
+				return_data = r.json()
+		except Exception as token_error:
+			console.print("Please make sure Riot Client is open!")
+			logger.error(
+				"Failed to retrieve entitlement tokens from Riot client",
+				context={"port": port},
+				exc_info=token_error,
+			)
+			return None
+
+		access_token = return_data.get("accessToken")
+		entitlements_token = return_data.get("token")
+		subject = return_data.get("subject")
+
+		if not all([access_token, entitlements_token, subject]):
+			logger.warning(
+				"Riot Client returned incomplete token payload",
+				context={"keys": list(return_data.keys())},
+			)
+			return None
+
+		return access_token, entitlements_token, subject
+
 	except Exception as e:
 		console.print(color_text("Please make sure you are logged into a Riot Account!", Fore.CYAN))
-		traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-		logger.log(1, f"Log In Failed!\nData: {return_data}\nTraceback: {traceback_str}")
+		logger.error(
+			"Log in failed while fetching Riot Client credentials",
+			context={"port": port, "has_payload": bool(return_data)},
+			exc_info=e,
+		)
+		return None
 	return None
 
 
@@ -574,7 +817,7 @@ class ValorantShopChecker:
 
 					bundle_items[bundle_uuid] = []
 
-					# Calculate total discounted price from all items in the bundle
+					# Calculate the total discounted price from all items in the bundle
 					bundle_prices.append((bundle.get("TotalBaseCost", {"85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741": -1}).get(
 						"85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741", -1), bundle.get("TotalDiscountedCost", {
 						"85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741": -1}).get("85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741", -1)))
@@ -641,7 +884,7 @@ class ValorantShopChecker:
 										]
 										break
 						else:
-							skin_rarity = ["N/A", "4A4A4A", "https://img.icons8.com/liquid-glass/48/no-image.png"]
+							skin_rarity = ["N/A", "4a4a4a66", "https://img.icons8.com/liquid-glass/48/no-image.png"]
 						bundle_items[bundle_uuid].append((item_name, item_icon, item_cost, skin_rarity))
 
 					# Assuming all bundles share the same duration, take the last one
@@ -2168,6 +2411,10 @@ class ConfigManager:
 
 		self.path.write_text("".join(lines).rstrip() + "\n", encoding="utf-8")
 
+	def save(self, parser: configparser.ConfigParser) -> None:
+		"""Persist the provided configparser to disk using managed comments."""
+		self._write_with_comments(parser)
+
 
 def build_main_config_manager(
 	path: Path | str, game_modes: Mapping[str, str]
@@ -2187,6 +2434,14 @@ def build_main_config_manager(
 		raise ConfigValidationError(
 			f"Value '{trimmed}' is not a recognized game mode. "
 			f"Valid options: {', '.join(valid_mode_list)}."
+		)
+
+	def normalize_default_menu_action(value: str) -> str:
+		normalized = value.strip().lower()
+		if normalized in VALID_MENU_ACTIONS:
+			return normalized
+		raise ConfigValidationError(
+			"Value must be one of: manual, shop, loader."
 		)
 
 	sections: Sequence[ConfigSection] = (
@@ -2237,12 +2492,159 @@ def build_main_config_manager(
 						"Default = false.",
 					),
 				),
+				ConfigOption(
+					key="enable_debug_logging",
+					default=False,
+					value_type="bool",
+					description=(
+						"Print extra diagnostic details to the console and logs.",
+						"Useful when troubleshooting requests or API responses.",
+						"Default = false.",
+					),
+				),
+				ConfigOption(
+					key="default_menu_action",
+					default="manual",
+					description=(
+						"Select what happens after login when you are idle.",
+						"manual = always ask, shop = open the store viewer, loader = jump into the in-game loader.",
+						"Default = manual.",
+					),
+					normalizer=normalize_default_menu_action,
+				),
+				ConfigOption(
+					key="setup_completed",
+					default=False,
+					value_type="bool",
+					description=(
+						"Tracks whether the interactive setup wizard has been accepted.",
+						"Automatically updated by the application.",
+					),
+				),
 			),
 		),
 	)
 
 	return ConfigManager(path, sections)
 
+
+def refresh_runtime_preferences(config_main: configparser.SectionProxy) -> bool:
+	"""Synchronize runtime globals from the configuration."""
+	global DEFAULT_MENU_ACTION, SETUP_COMPLETED, DEBUG
+	default_action = config_main.get("default_menu_action", "manual").strip().lower()
+	if default_action not in VALID_MENU_ACTIONS:
+		default_action = "manual"
+		config_main["default_menu_action"] = default_action
+	DEFAULT_MENU_ACTION = default_action
+	SETUP_COMPLETED = config_main.get("setup_completed", "false").strip().lower() == "true"
+	debug_enabled = config_main.get("enable_debug_logging", "false").strip().lower() == "true"
+	if not CLI_DEBUG_OVERRIDE:
+		DEBUG = debug_enabled
+	return debug_enabled
+
+
+def run_setup_wizard(
+		config_manager: ConfigManager,
+		config_parser: configparser.ConfigParser,
+		*,
+		game_modes: Mapping[str, str],
+) -> None:
+	"""Guide the user through the interactive setup workflow."""
+	if not sys.stdin or not sys.stdin.isatty():
+		raise RuntimeError("Interactive setup requires a terminal session.")
+
+	console.rule("[bold cyan]Initial Setup[/bold cyan]")
+	disclaimer_text = "\n".join(f"- {line}" for line in DISCLAIMER_LINES)
+	console.print(
+		Panel(
+			disclaimer_text,
+			title="Disclaimer",
+			border_style="red",
+			subtitle="Read carefully before continuing",
+		)
+	)
+	console.print(
+		"[bright_white]This wizard configures core behaviour and stores your preferences in config.ini.[/bright_white]"
+	)
+
+	if not _prompt_bool("Do you understand and accept this disclaimer?", default=False):
+		raise RuntimeError("Setup aborted because the disclaimer was not accepted.")
+
+	config_main = config_parser["Main"]
+
+	current_match_count = int(config_main.get("amount_of_matches_for_player_stats", "10"))
+	match_count = _prompt_int(
+		"How many matches should be aggregated for player statistics?",
+		default=current_match_count,
+		minimum=1,
+		maximum=20,
+	)
+
+	current_mode_setting = config_main.get("stats_used_game_mode", "ALL").strip()
+	default_mode_key = current_mode_setting.lower()
+	if current_mode_setting.upper() in {"ALL", "SAME"}:
+		default_mode_key = current_mode_setting.lower()
+	mode_choices = {"all": "All queues", "same": "Matchmaking queue"}
+	for code, label in sorted(game_modes.items()):
+		mode_choices[code] = label
+	selected_mode = _prompt_choice(
+		"Which queue should player statistics use?",
+		mode_choices,
+		default_mode_key,
+	)
+	if selected_mode == "all":
+		config_main["stats_used_game_mode"] = "ALL"
+	elif selected_mode == "same":
+		config_main["stats_used_game_mode"] = "SAME"
+	else:
+		config_main["stats_used_game_mode"] = selected_mode
+
+	use_rpc_default = config_main.get("use_discord_rich_presence", "false").strip().lower() == "true"
+	use_rpc = _prompt_bool("Enable Discord Rich Presence?", default=use_rpc_default)
+
+	advanced_default = config_main.get("advanced_missing_agents", "false").strip().lower() == "true"
+	advanced_agents = _prompt_bool(
+		"Enable advanced missing agent detection (beta)?",
+		default=advanced_default,
+	)
+
+	debug_default = config_main.get("enable_debug_logging", "false").strip().lower() == "true"
+	debug_logging = _prompt_bool("Enable verbose debug logging?", default=debug_default)
+
+	menu_choices = {
+		"manual": "Choose every time",
+		"shop": "Launch Valorant Store viewer",
+		"loader": "Start the in-game loader",
+	}
+	default_menu = config_main.get("default_menu_action", "manual").strip().lower()
+	if default_menu not in menu_choices:
+		default_menu = "manual"
+	selected_menu_action = _prompt_choice(
+		"What should happen after login when idle?",
+		menu_choices,
+		default_menu,
+	)
+
+	config_main["amount_of_matches_for_player_stats"] = str(match_count)
+	config_main["advanced_missing_agents"] = "true" if advanced_agents else "false"
+	config_main["use_discord_rich_presence"] = "true" if use_rpc else "false"
+	config_main["enable_debug_logging"] = "true" if debug_logging else "false"
+	config_main["default_menu_action"] = selected_menu_action
+	config_main["setup_completed"] = "true"
+
+	config_manager.save(config_parser)
+	refresh_runtime_preferences(config_main)
+
+	console.print(
+		Panel(
+			"Setup complete! You can re-run this wizard anytime with the --setup flag or from the main menu.",
+			style="bold green",
+		)
+	)
+
+
+CONFIG_MANAGER: Optional[ConfigManager] = None
+CONFIG: Optional[configparser.ConfigParser] = None
 
 @lru_cache(maxsize=128)
 def get_userdata_from_id(user_id: str, host_player_uuid: str | None = None) -> tuple[str, bool]:
@@ -2292,7 +2694,7 @@ def get_agent_role(agent_id: str) -> str:
 		return "Unknown"
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=999)
 def get_all_agents_by_role() -> Dict[str, List[str]]:
 	"""
 	Fetch all playable agents once and bucket them by role.
@@ -2324,7 +2726,7 @@ _AGENT_UTILITY_TAG: Dict[str, str] = {
 	"Vyse": "Flash",
 	# Smokers / Controllers
 	"Brimstone": "Smoke",
-	"Omen": "Smoke",
+	"Omen": "Both",
 	"Astra": "Smoke",
 	"Viper": "Smoke",
 	"Harbor": "Smoke",
@@ -2581,12 +2983,32 @@ def get_match_details(match_id: str, platform: str = "PC"):
 			return None
 
 
-def get_player_data_from_uuid(user_id: str, cache: dict, platform: str = "PC", gamemode: str = None):
+def get_player_data_from_uuid(user_id: str, cache: dict | None, platform: str = "PC", gamemode: str = None):
+	global PLAYER_STATS_CACHE, PLAYER_STATS_PARTY_CACHE, PLAYER_STATS_CACHE_EXPIRY
+
+	user_id = str(user_id)
+	if cache is None:
+		cache = PLAYER_STATS_CACHE
+
+	def _store_cache(stats_entry: PlayerStatsTuple, parties: dict[str, list[str]], ttl: float = PLAYER_STATS_CACHE_TTL):
+		cache[user_id] = stats_entry
+		PLAYER_STATS_CACHE[user_id] = stats_entry
+		PLAYER_STATS_PARTY_CACHE[user_id] = parties
+		PLAYER_STATS_CACHE_EXPIRY[user_id] = time.time() + ttl
+		return parties, cache
+
+	current_time = time.time()
+	cached_entry = cache.get(user_id)
+	if cached_entry is not None:
+		expiry_at = PLAYER_STATS_CACHE_EXPIRY.get(user_id)
+		if expiry_at is None or expiry_at > current_time:
+			return PLAYER_STATS_PARTY_CACHE.get(user_id, {}), cache
+
 	kills = 0
 	deaths = 0
-	wins = []
-	partyIDs = {}
-	headshot = []
+	wins: list[str] = []
+	partyIDs: dict[str, list[str]] = {}
+	headshot: list[int] = []
 	search = ""
 
 	try:
@@ -2601,67 +3023,65 @@ def get_player_data_from_uuid(user_id: str, cache: dict, platform: str = "PC", g
 		url = f"https://pd.na.a.pvp.net/match-history/v1/history/{user_id}?endIndex={int(config_main.get('amount_of_matches_for_player_stats', '10'))}{search}"
 
 		response = api_request("GET", url, headers=headers)
-
 		history = response.json().get("History", [])
 
+		if not history:
+			return _store_cache((-1, ['No Matches'], -1, -1), {})
+
 		save_match_data = None
-		for i in history:
+		for history_entry in history:
 			time.sleep(3)  # TODO | Remove someday
-			match_id = i["MatchID"]
+			match_id = history_entry["MatchID"]
 			match_data = get_match_details(match_id, platform)
 
 			if match_data is None:
 				continue  # Skip if match data couldn't be retrieved
 
 			player_data = match_data.get("players", [])
-			player_score = []
+			player_score: list[float] = []
 			performance = ValorantPerformanceScorer()
 			for match in player_data:
-				if str(match["subject"]) == str(user_id):
-					partyId = match["partyId"]
+				if str(match["subject"]) == user_id:
+					party_id = match["partyId"]
 
 					if save_match_data is None:
-						if partyId not in partyIDs:
-							partyIDs[partyId] = [match["subject"]]
-						elif match["subject"] not in partyIDs[partyId]:
-							partyIDs[partyId].append(match["subject"])
+						if party_id not in partyIDs:
+							partyIDs[party_id] = [match["subject"]]
+						elif match["subject"] not in partyIDs[party_id]:
+							partyIDs[party_id].append(match["subject"])
 						save_match_data = player_data
 
 					team = match["teamId"]
 					game_team_id = match_data["teams"][0]["teamId"]
 					won = match_data["teams"][0]["won"] if game_team_id == team else match_data["teams"][1]["won"]
-					wins.append("[green]■[/green]" if won else "[red]■[/red]")
+					wins.append("[green]W[/green]" if won else "[red]L[/red]")
 					kills += match["stats"]["kills"]
 					deaths += match["stats"]["deaths"]
 
 					performance.prepare(match_data)
 					player_score.append(performance.score_player(user_id)[0])
 
-					# agent = get_agent_data_from_id(match["characterId"])  # TODO | Unused
-			avg_score = sum(player_score) / len(player_score) if len(player_score) > 0 else 0
-			headshot.append(round(get_headshot_percent(match_data)[str(user_id)]))
+			avg_score = sum(player_score) / len(player_score) if player_score else 0
+			headshot_data = get_headshot_percent(match_data)
+			user_headshot = headshot_data.get(user_id)
+			if user_headshot is not None:
+				headshot.append(round(user_headshot))
 
-			avg_headshot = sum(headshot) / len(headshot) if len(headshot) > 0 else 0
-
-		if len(history) == 0:
-			cache[user_id] = (-1, ['No Matches'], -1, -1)
-			return {}, cache
+		avg_headshot = sum(headshot) / len(headshot) if headshot else 0
 
 		kd_ratio = calculate_kd(kills, deaths)
 		try:
-			cache[user_id] = (kd_ratio, wins, round(avg_headshot), avg_score)
+			stats_entry: PlayerStatsTuple = (kd_ratio, wins, round(avg_headshot), avg_score)
+			return _store_cache(stats_entry, partyIDs)
 		except ReferenceError:
 			logger.log(2, "get_player_data_from_uuid ReferenceError on avg_headshot | avg_score")
-			cache[user_id] = (kd_ratio, wins, 0, avg_score)
-
-		return partyIDs, cache
+			stats_entry = (kd_ratio, wins, 0, avg_score)
+			return _store_cache(stats_entry, partyIDs)
 
 	except Exception as e:
 		traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 		logger.log(1, traceback_str)
-		cache[user_id] = (-1, ['Error'], -1, -1)
-		return {}, cache
-
+		return _store_cache((-1, ['Error'], -1, -1), {}, ttl=min(PLAYER_STATS_CACHE_TTL, 60))
 
 def get_rank_color(rank: str, use_rich_markup: bool = False):
 	"""Return colored text for a rank, with Radiant being multicolored."""
@@ -2735,7 +3155,8 @@ def get_user_current_state(puuid: str, presences_data: dict = None) -> int:
 				2: In Menus Queueing
 				3: Pregame
 				4: In-Game
-				5: Unknown State
+				5: Replay
+				6: Unknown State
 		"""
 	requests.packages.urllib3.disable_warnings()  # noqa
 	try:
@@ -2770,8 +3191,10 @@ def get_user_current_state(puuid: str, presences_data: dict = None) -> int:
 					return 3
 				elif state == "INGAME":
 					return 4
-				else:  # Unknown State
+				elif state == "REPLAY":
 					return 5
+				else:  # Unknown State
+					return 6
 	except Exception as e:
 		traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 		logger.log(1, traceback_str)
@@ -2911,9 +3334,9 @@ class LoopThrottler:
 		await asyncio.sleep(self._interval)
 
 
-async def run_in_game(cache: dict = None, partys: dict = None):
+async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 	if cache is None:
-		cache = {}
+		cache = PLAYER_STATS_CACHE
 
 	console.print("Loading...")
 
@@ -3122,47 +3545,68 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 						)
 					return rows
 
-				def build_team_table(rows: list[dict[str, str]], *, header_color: str) -> Table:
-					table = Table(
-						show_header=True,
-						header_style=f"bold {header_color}",
-						pad_edge=False,
-						expand=True,
-					)
-					table.add_column("Party", style=header_color, no_wrap=True)
-					table.add_column("Level", style=header_color, no_wrap=True)
-					table.add_column("Rank", no_wrap=True)
-					table.add_column("Player", overflow="fold")
-					table.add_column("Agent", style="cyan", no_wrap=True)
-					table.add_column("KD", style="magenta", justify="right", no_wrap=True)
-					table.add_column("HS%", style="magenta", justify="right", no_wrap=True)
-					table.add_column("Recent", style="magenta")
+				# ---------- Centered, table-less renderer ----------
+				def _measure(markup: str) -> int:
+					try:
+						return console.measure(Text.from_markup(markup)).maximum
+					except Exception:
+						# Fallback to plain length if markup parsing fails
+						return len(markup)
 
+				def _level_markup(level_value: str, color: str) -> str:
+					lv = level_value
+					if lv in ("", "-", "--", "None"):
+						lv = "--"
+					return f"[{color}]LVL {lv}[/{color}]"
+
+				def _agent_markup(agent_value: str) -> str:
+					if agent_value in ("-", "--", "Unknown"):
+						return agent_value
+					return f"[italic]{agent_value}[/]"
+
+				def _compute_widths(all_rows: list[dict[str, str]], color: str) -> dict[str, int]:
+					widths = {k: 0 for k in ("party", "level", "rank", "player", "agent", "kd", "hs", "recent")}
+					for row in all_rows:
+						level_m = _level_markup(row["level"], color)
+						values = {
+							"party": row["party"],
+							"level": level_m,
+							"rank": get_rank_color(row["rank"], True),
+							"player": row["player"],
+							"agent": _agent_markup(row["agent"]),
+							"kd": row["kd"],
+							"hs": row["hs"],
+							"recent": row["recent"],
+						}
+						for key, val in values.items():
+							widths[key] = max(widths[key], _measure(val))
+					return widths
+
+				def _pad(markup: str, width: int) -> str:
+					w = _measure(markup)
+					pad = max(0, width - w)
+					return markup + (" " * pad)
+
+				def build_team_panel(rows: list[dict[str, str]], *, header_color: str, widths: dict[str, int],
+				                     title: str, border_style: str) -> Panel:
+					lines: list[str] = []
 					for row in rows:
-						level_value = row["level"]
-						level_text = (
-							f"LVL {level_value}"
-							if level_value not in ("", "-", "--", "None")
-							else "LVL --"
-						)
-						level_markup = f"[{header_color}]{level_text}[/{header_color}]"
-						agent_value = row["agent"]
-						agent_markup = (
-							f"[italic]{agent_value}[/]"
-							if agent_value not in ("-", "--", "Unknown")
-							else agent_value
-						)
-						table.add_row(
-							row["party"],
-							level_markup,
-							get_rank_color(row["rank"], True),
-							row["player"],
-							agent_markup,
-							row["kd"],
-							row["hs"],
-							row["recent"],
-						)
-					return table
+						level_m = _level_markup(row["level"], header_color)
+						rank_m = get_rank_color(row["rank"], True)
+						agent_m = _agent_markup(row["agent"])
+						parts = [
+							_pad(row["party"], widths["party"]),
+							_pad(level_m, widths["level"]),
+							_pad(rank_m, widths["rank"]),
+							_pad(row["player"], widths["player"]),
+							_pad(agent_m, widths["agent"]),
+							_pad(row["kd"], widths["kd"]),
+							_pad(row["hs"], widths["hs"]),
+							_pad(row["recent"], widths["recent"]),
+						]
+						lines.append("  ".join(parts))
+					block = Text.from_markup("\n".join(lines)) if lines else Text("")
+					return Panel(Align.center(block), title=title, border_style=border_style, padding=(0, 1))
 
 				team_blue_rows = build_team_rows(team_blue_player_list)
 				team_red_rows = build_team_rows(team_red_player_list)
@@ -3186,17 +3630,23 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 					own_team_title = f"Your Team ({own_team_actual})"
 					opponent_title = f"Opponents ({opponent_actual})"
 
-				own_team_panel = Panel(
-					build_team_table(own_team_rows, header_color="blue"),
+				# Shared widths across both sides for perfect lining
+				all_rows = own_team_rows + opponent_rows
+				# Compute widths using blue as the level color (only affects LVL styling width)
+				widths = _compute_widths(all_rows, "blue")
+				own_team_panel = build_team_panel(
+					own_team_rows,
+					header_color="blue",
+					widths=widths,
 					title=own_team_title,
 					border_style="blue",
-					padding=(0, 1),
 				)
-				opponent_panel = Panel(
-					build_team_table(opponent_rows, header_color="red"),
+				opponent_panel = build_team_panel(
+					opponent_rows,
+					header_color="red",
+					widths=widths,
 					title=opponent_title,
 					border_style="red",
-					padding=(0, 1),
 				)
 
 				score = get_current_game_score(val_uuid)
@@ -3219,7 +3669,7 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 						asyncio.create_task(match_report(match_id))
 						match_report_dispatched = True
 					exit_after_render = True
-					exit_sleep = 3
+					exit_sleep = 1
 				except Exception:
 					pass
 
@@ -3238,7 +3688,7 @@ async def run_in_game(cache: dict = None, partys: dict = None):
 					last_signature = signature
 					console.clear()
 					clear_console()
-					console.print(render_header, markup=True)
+					console.print(Align.center(Text.from_markup(render_header)))
 					console.print(Columns([own_team_panel, opponent_panel], expand=True, equal=True))
 					for line in scoreboard_lines:
 						console.print(line)
@@ -3303,7 +3753,7 @@ async def run_pregame(data: dict):
 	threads = []
 	rank_list = {}
 
-	cache = {}
+	cache = PLAYER_STATS_CACHE
 	partys = {}
 	throttler = LoopThrottler()
 	last_signature = None
@@ -3608,8 +4058,7 @@ async def listen_for_input(party_id: str):
 				console.print(table, style="cyan")
 			if DEBUG:
 				if user_input.lower()[0] == "-":
-					pass
-
+					exec(user_input[1:])  # TODO | Make a bit safer
 
 		except asyncio.CancelledError:
 			break
@@ -3638,9 +4087,10 @@ async def get_friend_states() -> list[str]:
 					2: In Menus Queueing
 					3: Pregame
 					4: In-Game
-					5: Unknown State
+					5: Replay
+					6: Unknown State
 					"""
-					state_str = "In Menu" if state == 1 else "Queueing" if state == 2 else "Pre-game" if state == 3 else "In-game" if state == 4 else "Unknown-4" if state == 5 else "Unknown-5"
+					state_str = "In Menu" if state == 1 else "Queueing" if state == 2 else "Pre-game" if state == 3 else "In-game" if state == 4 else "Replay" if state == 5 else "Unknown State" if state == 6 else "Unknown"
 					full_str = f"{user['game_name']}#{user['game_tag']}: {state_str}"
 					friend_list.append(full_str)
 	except Exception:
@@ -3657,6 +4107,8 @@ async def get_party(got_rank: dict = None):
 	last_rendered_content = ""
 	input_task = None  # Task for input handling
 	got_rank = got_rank or {}
+	player_stats_cache = PLAYER_STATS_CACHE
+	prefetch_tasks: dict[str, asyncio.Task] = {}
 
 	logger.log(3, "Loading Party... ")
 
@@ -3690,18 +4142,179 @@ async def get_party(got_rank: dict = None):
 			buffer.truncate(0)
 			buffer.seek(0)
 
-			# Build the dynamic party section.
-			message_list = ["[cyan]----- Party -----[/cyan]\n"]
+			# Build the dynamic party section (centered, no tables)
 			party_id = await fetch_party_id()
 
 			if party_id:
 				party_data = await fetch_party_data(party_id)
+				for player_id, task in list(prefetch_tasks.items()):
+					if task.done():
+						prefetch_tasks.pop(player_id, None)
 
 				if input_task is None or input_task.done():
 					input_task = asyncio.create_task(listen_for_input(party_id))
 
-				message_list.extend(parse_party_data(party_data, got_rank))
-				party_section = "".join(message_list)
+				# Helpers for measurement and rendering
+				def _measure(markup: str) -> int:
+					try:
+						return console.measure(Text.from_markup(markup)).maximum
+					except Exception:
+						return len(markup)
+
+				def _rank_markup(rank: str) -> str:
+					return get_rank_color(rank, True)
+
+				def _level_markup(level_value: str) -> str:
+					lv = level_value
+					if lv in ("", "-", "--", "None"):
+						lv = "--"
+					return f"[cyan]LVL {lv}[/cyan]"
+
+				def _score_markup(player_id: str) -> str:
+					stats = player_stats_cache.get(player_id)
+					if stats is None:
+						if player_id in prefetch_tasks:
+							return "[yellow]Loading[/yellow]"
+						return "[dim]--[/dim]"
+					score_value = stats[3]
+					try:
+						score_float = float(score_value)
+					except (TypeError, ValueError):
+						if isinstance(score_value, str) and score_value.strip():
+							return score_value
+						return "[dim]--[/dim]"
+					if score_float < 0:
+						return "[dim]--[/dim]"
+					return f"[magenta]{int(round(score_float))}[/magenta]"
+
+				def _schedule_prefetch(member: dict[str, Any]) -> None:
+					player_id = str(member.get("Subject", ""))
+					if not player_id:
+						return
+
+					expiry_at = PLAYER_STATS_CACHE_EXPIRY.get(player_id, 0)
+					if player_id in player_stats_cache and expiry_at > time.time():
+						return
+
+					task = prefetch_tasks.get(player_id)
+					if task and not task.done():
+						return
+
+					platform_info = member.get("PlatformInfo", {})
+					platform_type = str(platform_info.get("platformType", "PC")).upper()
+					platform = "PC" if platform_type == "PC" else "CONSOLE"
+
+					async def _prefetch_async() -> None:
+						def _prefetch_sync() -> None:
+							try:
+								with request_semaphore:
+									get_player_data_from_uuid(player_id, player_stats_cache, platform)
+							except Exception as exc:
+								logger.log(2, f"Failed to prefetch stats for {player_id}: {exc}")
+
+						try:
+							await asyncio.to_thread(_prefetch_sync)
+						finally:
+							prefetch_tasks.pop(player_id, None)
+
+					prefetch_tasks[player_id] = asyncio.create_task(_prefetch_async())
+
+				# Collect rows (badges, level, rank, score, name)
+				rows: list[dict[str, str]] = []
+				for member in party_data.get("Members", []):
+					member_id = str(member["Subject"])
+					_schedule_prefetch(member)
+					player_name, is_user = get_userdata_from_id(member_id, val_uuid)
+					if member_id in ROLE_PUUID_LIST:
+						role: list[str] | None = ROLE_PUUID_LIST.get(member_id, None)
+						if role is not None:
+							player_name += f" {str(b64decode(role[0].encode()).decode())}"
+					is_leader = member.get("IsOwner", False)
+					player_lvl = str(member["PlayerIdentity"].get("AccountLevel", "-1"))
+
+					badges: list[str] = []
+					if is_leader:
+						badges.append("[red]LEADER[/red]")
+					if is_user:
+						badges.append(SELF_BADGE_RICH)
+
+					if member_id not in got_rank:
+						player_rank_str = _rank_markup(get_rank_from_uuid(member_id))
+						got_rank[member_id] = player_rank_str
+					else:
+						player_rank_str = got_rank[member_id]
+
+					score_markup = _score_markup(member_id)
+
+					rows.append({
+						"badges": " ".join(badges),
+						"level": _level_markup(player_lvl),
+						"rank": player_rank_str,
+						"score": score_markup,
+						"name": player_name,
+					})
+
+				# Compute widths across rows
+				widths = {k: 0 for k in ("badges", "level", "rank", "score", "name")}
+				for r in rows:
+					for key in widths:
+						widths[key] = max(widths[key], _measure(r[key]))
+
+				# Ensure minimal badge width using header name
+				widths["badges"] = max(widths["badges"], _measure("[dim]BADGES[/dim]"))
+				widths["score"] = max(widths["score"], _measure("[dim]SCORE[/dim]"))
+
+				# Render header and block lines
+				line_parts: list[str] = []
+				head_parts = [
+					"[dim]BADGES[/dim]",
+					"[dim]LVL[/dim]",
+					"[dim]RANK[/dim]",
+					"[dim]SCORE[/dim]",
+					"[dim]PLAYER[/dim]",
+				]
+
+				# Helper to pad a cell by markup width
+				def _pad_cell(markup: str, width: int) -> str:
+					return markup + (" " * max(0, width - _measure(markup)))
+
+				# Build a centered header line with a subtle divider
+				gap = "  "
+				head_line = gap.join([
+					_pad_cell(head_parts[0], widths["badges"]),
+					_pad_cell(head_parts[1], widths["level"]),
+					_pad_cell(head_parts[2], widths["rank"]),
+					_pad_cell(head_parts[3], widths["score"]),
+					_pad_cell(head_parts[4], widths["name"]),
+				])
+				total_width = len(head_line)
+				divider = f"[dim]{'\u2500' * total_width}[/dim]"
+				line_parts.append(head_line)
+				line_parts.append(divider)
+
+				for r in rows:
+					pad_badges = _pad_cell(r["badges"], widths["badges"]) if r["badges"] else (" " * widths["badges"])
+					pad_level = _pad_cell(r["level"], widths["level"])
+					pad_rank = _pad_cell(r["rank"], widths["rank"])
+					pad_score = _pad_cell(r["score"], widths["score"])
+					pad_name = _pad_cell(r["name"], widths["name"])
+					line_parts.append(gap.join([pad_badges, pad_level, pad_rank, pad_score, pad_name]).rstrip())
+
+				# Header line for mode/queue
+				game_mode = str(party_data.get("MatchmakingData", {}).get("QueueID", "Unknown")).lower()
+				game_mode = GAME_MODES.get(game_mode.lower(), str(game_mode))
+				head = f"[green]Mode:[/green] {game_mode}"
+				block_text = Text.from_markup("\n".join(line_parts)) if line_parts else Text(
+					"[dim]No party members[/dim]", justify="center")
+				party_panel = Panel(
+					Align.center(block_text),
+					title="Party",
+					border_style="cyan",
+					padding=(0, 1),
+				)
+
+				# For content-change detection, keep a plain string signature
+				party_section = f"{head}\n" + "\n".join(line_parts)
 
 				if Notification.has_notifications():
 					notification_display = Notification.get_display()
@@ -3714,7 +4327,8 @@ async def get_party(got_rank: dict = None):
 					clear_console()
 					if Notification.has_notifications():
 						console.print(notification_display, markup=True)
-					console.print("\n" + party_section, markup=True)
+					console.print(Text.from_markup(head))
+					console.print(Columns([party_panel], expand=True, equal=True))
 					last_rendered_content = new_screen_content
 
 				await asyncio.sleep(0.5)
@@ -3769,8 +4383,10 @@ def parse_party_data(party_data, got_rank):
 
 	for member in party_data.get("Members", []):
 		player_name, is_user = get_userdata_from_id(str(member["Subject"]), val_uuid)
-		if member["Subject"] in DEV_PUUID_LIST:
-			player_name += " [hot_pink][[/hot_pink][red]DEV[/red][hot_pink]][/hot_pink]"
+		if member["Subject"] in ROLE_PUUID_LIST:
+			role: list[str] | None = ROLE_PUUID_LIST.get(member["Subject"], None)
+			if role is not None:
+				player_name += f" {str(b64decode(role[0].encode()).decode())}"
 		is_leader = member.get("IsOwner", False)
 		player_lvl = member["PlayerIdentity"].get("AccountLevel", "-1")
 
@@ -3862,6 +4478,63 @@ def get_userdata_from_token() -> tuple[str, str]:
 		return "None", "None"
 
 
+def _resolve_menu_action(user_input: str) -> str | None:
+	"""Normalize raw user input from the main menu into an action keyword."""
+	normalized = user_input.strip().lower()
+	if not normalized:
+		return None
+	if normalized in {"1", "shop", "store"}:
+		return "shop"
+	if normalized in {"2", "loader", "load", "ingame", "in-game"}:
+		return "loader"
+	if normalized in {"settings", "setup", "config", "preferences"}:
+		return "settings"
+	return None
+
+
+def _prompt_menu_action(default_action: str) -> str | None:
+	"""Prompt the user for a menu choice, respecting a configured default."""
+	if not sys.stdin or not sys.stdin.isatty():
+		if default_action in {"shop", "loader"}:
+			return default_action
+		return "shop"
+
+	if default_action == "manual":
+		console.print(
+			"\n(1) Valorant Shop, (2) In-Game Loader\nType 'settings' to adjust preferences."
+		)
+		return _resolve_menu_action(input("> ").strip())
+
+	pretty_default = "Valorant Shop" if default_action == "shop" else "In-Game Loader"
+	console.print(
+		f"\nDefault action: {pretty_default}. Press Enter to continue, "
+		"type 'menu' to choose manually, or 'settings' to open configuration."
+	)
+	choice = input("> ").strip().lower()
+	if not choice:
+		return default_action
+	if choice in {"menu", "m", "manual"}:
+		console.print(
+			"\n(1) Valorant Shop, (2) In-Game Loader\nType 'settings' to adjust preferences."
+		)
+		choice = input("> ").strip()
+	return _resolve_menu_action(choice)
+
+
+async def _run_manual_loader_sequence() -> None:
+	"""Launch the in-game loader until the session requests an exit."""
+	while True:
+		logged_in = await log_in()
+		if logged_in:
+			await check_if_user_in_pregame()
+			logger.debug("Calling get_party from manual launch flow")
+			if await get_party() == -1:
+				break
+		else:
+			await asyncio.sleep(2.5)
+			console.clear()
+
+
 def main_display():
 	"""Display the main banner and version information."""
 	banner = Panel(
@@ -3908,6 +4581,21 @@ async def main() -> bool:
 	console.print("[yellow]One moment while we sign you in...[/yellow]\n")
 
 	try:
+		loop = asyncio.get_running_loop()
+		if ASYNC_EXCEPTION_HANDLER is not None:
+			loop.set_exception_handler(ASYNC_EXCEPTION_HANDLER)
+			logger.debug(
+				"Attached asyncio exception handler to running loop",
+				context={"loop_id": id(loop)},
+			)
+	except RuntimeError:
+		logger.warning(
+			"Failed to obtain running asyncio loop during main startup",
+			context={"thread": threading.current_thread().name},
+		)
+
+	try:
+		logger.info("Attempting Riot login via UI flow.")
 		logged_in = await with_spinner("Logging in...", log_in())
 	except KeyboardInterrupt:
 		_print_exit_message()
@@ -3919,10 +4607,15 @@ async def main() -> bool:
 		except KeyboardInterrupt:
 			_print_exit_message()
 			return False
-		logger.log(3, f"Using Version: {VERSION} || Logged in as: {name}#{tag}")
+		logger.info(
+			"Login succeeded",
+			context={"version": VERSION, "player": f"{name}#{tag}"},
+		)
 
 		ValorantShop = ValorantShopChecker()
 		Notification = NotificationManager()
+
+		state: Optional[int] = None
 
 		while True:
 			try:
@@ -3933,22 +4626,30 @@ async def main() -> bool:
 				await display_friend_states(friend_states)
 
 				state = get_user_current_state(val_uuid)
-				if state != 3 and state != 4:
-					console.print("\n(1) Valorant Shop, (2) In-Game Loader\n")
-					user_input = input().strip()
-					if user_input == "1":
+				if state not in (3, 4):
+					action = _prompt_menu_action(DEFAULT_MENU_ACTION)
+					if action == "shop":
 						await with_spinner("Loading Store...", ValorantShop.run())
-					elif user_input == "2":
-						while True:
-							logged_in = await log_in()
-							if logged_in:
-								await check_if_user_in_pregame()
-								logger.log(4, "Calling get_party from main")
-								if await get_party() == -1:
-									break
-							else:
-								await asyncio.sleep(2.5)
-								console.clear()
+					elif action == "loader":
+						await _run_manual_loader_sequence()
+					elif action == "settings":
+						if CONFIG_MANAGER is None or CONFIG is None:
+							console.print(
+								Panel("Configuration manager unavailable. Restart the client to re-run setup.",
+								      style="bold red")
+							)
+						else:
+							try:
+								run_setup_wizard(CONFIG_MANAGER, CONFIG, game_modes=GAME_MODES)
+								config_main = CONFIG["Main"]
+								refresh_runtime_preferences(config_main)
+								logger.info(
+									"Interactive setup wizard re-run from menu",
+									context={"default_menu_action": DEFAULT_MENU_ACTION},
+								)
+							except RuntimeError as exc:
+								console.print(Panel(str(exc), style="bold red"))
+						await asyncio.sleep(1.0)
 					else:
 						console.print("[bold red]Invalid input. Please try again.[/bold red]")
 						await asyncio.sleep(1.5)
@@ -3957,7 +4658,7 @@ async def main() -> bool:
 						logged_in = await log_in()
 						if logged_in:
 							await check_if_user_in_pregame()
-							logger.log(4, "Calling get_party from auto-main")
+							logger.debug("Calling get_party from automated main loop")
 							await get_party()
 						else:
 							await asyncio.sleep(2.5)
@@ -3970,10 +4671,15 @@ async def main() -> bool:
 				return False
 			except Exception as e:
 				traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-				logger.log(1, traceback_str)
+				logger.error(
+					"Unhandled error inside interactive main loop",
+					context={"state": state},
+					exc_info=e,
+				)
 				console.print(f"[bold red]An Error Has Happened![/bold red]\n{traceback_str}")
 				await asyncio.sleep(2)
 	else:
+		logger.warning("Login attempt unsuccessful; main loop will retry.")
 		console.print("[bold red]Failed to log in. Retrying in 5 seconds...[/bold red]")
 	await asyncio.sleep(5)
 	return True
@@ -3984,20 +4690,65 @@ if __name__ == "__main__":
 	parser.add_argument("--debug", action="store_true", help="Enable debug mode")
 	parser.add_argument("--no-rpc", action="store_true", help="Disable Discord Rich Presence")
 	parser.add_argument("--version", action="store_true", help="Show version and exit")
+	parser.add_argument("--offline", action="store_true", help="Run without Riot client using offline fixtures")
+	parser.add_argument(
+		"--offline-state",
+		choices=["menus", "party", "pregame", "ingame", "postgame"],
+		default="menus",
+		help="Offline scenario to simulate (requires --offline)",
+	)
+	parser.add_argument(
+		"--setup",
+		action="store_true",
+		help="Open the interactive setup wizard before starting the client",
+	)
 	args = parser.parse_args()
 
 	if args.version:
 		console.print(f"Valorant Zoro Version: {VERSION}")
 		sys.exit(0)
 
+	CLI_DEBUG_OVERRIDE = args.debug
+	setup_invoked = False
+	offline_mode_enabled = False
+	offline_mode_exception: Optional[Exception] = None
+
+	# Activate offline mode early so subsequent calls (including config and API fetches) can be stubbed
+	if args.offline:
+		try:
+			from devtools.offline.integration import activate_offline_mode
+
+			activate_offline_mode(globals(), scenario=args.offline_state)
+			DEBUG = True  # extra logging helpful in offline
+			args.no_rpc = True
+			offline_mode_enabled = True
+		except Exception as e:
+			offline_mode_exception = e
+			console.print(Panel(f"Failed to enable offline mode: {e}", style="bold red"))
+
 	config_manager = build_main_config_manager(CONFIG_FILE, GAME_MODES)
 	config_result = config_manager.load()
 	config = config_result.config
 	config_main = config["Main"]
+	CONFIG_MANAGER = config_manager
+	CONFIG = config
+
+	debug_from_config = refresh_runtime_preferences(config_main)
+	if CLI_DEBUG_OVERRIDE:
+		DEBUG = True
+
+	if args.setup or not SETUP_COMPLETED:
+		try:
+			run_setup_wizard(config_manager, config, game_modes=GAME_MODES)
+			setup_invoked = True
+		except RuntimeError as exc:
+			console.print(Panel(str(exc), style="bold red"))
+			sys.exit(1)
+		debug_from_config = refresh_runtime_preferences(config_main)
+		if CLI_DEBUG_OVERRIDE:
+			DEBUG = True
 
 	# Preserve existing flags behavior
-	if args.debug:
-		DEBUG = True
 	if args.no_rpc:
 		config_main["use_discord_rich_presence"] = "false"
 
@@ -4008,18 +4759,60 @@ if __name__ == "__main__":
 	colorama.init(autoreset=True)
 	logger = Logger("Zoro", "logs/Zoro", ".log")
 	logger.load_public_key(pub_key)
+	install_global_exception_handlers(logger)
+
+	if setup_invoked:
+		logger.info(
+			"Interactive setup wizard completed",
+			context={"default_menu_action": DEFAULT_MENU_ACTION, "debug_logging": DEBUG},
+		)
+
+	logger.debug(
+		"Runtime arguments resolved",
+		context={
+			"debug_flag": args.debug,
+			"config_debug_flag": debug_from_config,
+			"no_rpc_flag": args.no_rpc,
+			"offline": args.offline,
+			"offline_state": args.offline_state,
+			"default_menu_action": DEFAULT_MENU_ACTION,
+		},
+	)
 
 	if DEBUG:
-		logger.log(4, "Debug mode enabled")
+		logger.debug("Debug mode enabled", context={"source": "cli_or_config"})
+
+	if offline_mode_enabled:
+		logger.info("Offline mode enabled", context={"scenario": args.offline_state})
+	elif offline_mode_exception is not None:
+		logger.error(
+			"Offline mode activation failed",
+			context={"scenario": args.offline_state},
+			exc_info=offline_mode_exception,
+		)
 
 	if config_result.created:
 		console.print(Panel(f"Created default configuration at '{CONFIG_FILE}'.", style="bold green"))
+		logger.info("Created default configuration file", context={"path": CONFIG_FILE})
 
 	if config_result.issues:
+		logger.warning(
+			"Configuration issues detected and adjusted",
+			context={"issue_count": len(config_result.issues)},
+		)
 		console.rule("[bold yellow]Configuration Adjustments[/bold yellow]")
 		for issue in config_result.issues:
 			key_path = f"{issue.section}.{issue.key}" if issue.key != "*" else issue.section
 			console.print(f"[yellow]{key_path}[/yellow]: {issue.message}")
+			logger.debug(
+				"Configuration setting adjusted",
+				context={
+					"section": issue.section,
+					"key": issue.key,
+					"message": issue.message,
+					"reverted_to": issue.reverted_to,
+				},
+			)
 			if issue.reverted_to is not None:
 				console.print(f"  Using value: {issue.reverted_to}")
 		console.print(Panel("Update the config file to apply your preferred values.", style="bold yellow"))
@@ -4027,7 +4820,11 @@ if __name__ == "__main__":
 			input("Press enter to continue...")
 	elif DEBUG:
 		console.print(Panel("Configuration loaded successfully.", style="bold green"))
+		logger.debug("Configuration loaded successfully without adjustments.")
 		time.sleep(1)
+
+	# Get user roles by PUUID
+	ROLE_PUUID_LIST: dict = api_request("GET", f"{b64decode(ROLE_URL.encode()).decode()}").json()
 
 	RPC = None
 	if not args.no_rpc:
