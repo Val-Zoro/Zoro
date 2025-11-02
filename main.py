@@ -391,7 +391,10 @@ class Logger:
 
 	def error(self, message: str, *, context: Optional[Mapping[str, Any]] = None,
 	          exc_info: Optional[Any] = None) -> int:
-		return self.log(1, message, context=context, exc_info=exc_info)
+		try:
+			return self.log(1, message, context=context, exc_info=exc_info)
+		except ImportError:  # Mostly happens when Python is shutting down asynchronously and modules are unloaded
+			pass
 
 	def log_exception(self, message: str, exception: BaseException,
 	                  *, context: Optional[Mapping[str, Any]] = None, level: int = 1) -> int:
@@ -650,7 +653,6 @@ async def get_user_data_from_riot_client() -> tuple[str, str, str] | None:
 			exc_info=e,
 		)
 		return None
-	return None
 
 
 async def log_in() -> bool:
@@ -995,7 +997,7 @@ class ValorantShopChecker:
 			# -----------------------------------------------------------
 			# Display the GUI with the collected data
 			# -----------------------------------------------------------
-			await self.display_gui(
+			await self.display_gui_modern(
 				vp, vp_icon,
 				rp, rp_icon,
 				kc, kc_icon,
@@ -1585,6 +1587,1126 @@ class ValorantShopChecker:
 					if remaining_nm > 0:
 						remaining_nm -= 1
 						nm_timer_label.config(text=f"Expires in: {format_duration(remaining_nm)}")
+					else:
+						nm_timer_label.config(text="Expired")
+			except tkinter.TclError:
+				return
+			after_id = root.after(1000, update_timers)
+
+		def on_closing():
+			if after_id is not None:
+				try:
+					root.after_cancel(after_id)
+				except tkinter.TclError:
+					pass
+			root.destroy()
+
+		root.protocol("WM_DELETE_WINDOW", on_closing)
+		update_timers()
+		root.mainloop()
+
+	async def display_gui_modern(
+			self,
+			vp, vp_icon, rp, rp_icon, kc, kc_icon,
+			current_bundles, bundles_images, bundle_prices, bundle_duration, bundle_items,
+			skin_names, skin_images, skin_videos, skin_prices, skin_duration, skin_rarity,
+			nm_offers, nm_prices, nm_images, nm_duration
+	):
+		# PySide6-based shop UI (no Tkinter)
+		from PySide6.QtCore import Qt, QTimer, QSize
+		from PySide6.QtGui import QPixmap, QImage, QIcon
+		from PySide6.QtWidgets import (
+			QApplication,
+			QMainWindow,
+			QWidget,
+			QScrollArea,
+			QVBoxLayout,
+			QHBoxLayout,
+			QLabel,
+			QPushButton,
+			QFrame,
+			QGridLayout,
+			QDialog,
+			QSizePolicy,
+			QSystemTrayIcon,
+			QMenu,
+		)
+
+		# Theme palette
+		DARK_BG = "#151618"
+		LIGHT_BG = "#F6F7FB"
+		DARK_SURFACE = "#1E2023"
+		LIGHT_SURFACE = "#FFFFFF"
+		DARK_CARD = "#212327"
+		LIGHT_CARD = "#FFFFFF"
+		ACCENT = "#FF4654"
+		FG_DARK = "#0F1113"
+		FG_LIGHT = "#FFFFFF"
+
+		def fmt_num(n) -> str:
+			try:
+				return f"{int(n):,}"
+			except Exception:
+				return str(n)
+
+		def format_duration(seconds: int) -> str:
+			d = seconds // (24 * 3600)
+			seconds %= (24 * 3600)
+			h = seconds // 3600
+			seconds %= 3600
+			m = seconds // 60
+			s = seconds % 60
+			return f"{d}d {h}h {m}m {s}s"
+
+		pixmap_cache: dict[str, QPixmap] = {}
+
+		def get_pixmap(url: str, w: int | None = None, h: int | None = None) -> QPixmap | None:
+			if not url:
+				return None
+			key = f"{url}|{w}x{h}"
+			if key in pixmap_cache:
+				return pixmap_cache[key]
+			try:
+				r = requests.get(url, timeout=10)
+				r.raise_for_status()
+				img = QImage.fromData(r.content)
+				if img.isNull():
+					return None
+				pm = QPixmap.fromImage(img)
+				if w or h:
+					tw = w or pm.width()
+					th = h or pm.height()
+					pm = pm.scaled(QSize(tw, th), Qt.KeepAspectRatio,
+					               Qt.SmoothTransformation)
+				pixmap_cache[key] = pm
+				return pm
+			except Exception as e:
+				console.print(f"Pixmap load error: {e}")
+				return None
+
+		class CardsGrid(QWidget):
+			def __init__(self, min_w: int, max_cols: int):
+				super().__init__()
+				self.min_w = min_w
+				self.max_cols = max_cols
+				self.cards: list[QFrame] = []
+				self.grid = QGridLayout(self)
+				self.grid.setContentsMargins(0, 0, 0, 0)
+				self.grid.setHorizontalSpacing(12)
+				self.grid.setVerticalSpacing(12)
+
+			def add_card(self, c: QFrame):
+				self.cards.append(c)
+				self.grid.addWidget(c)
+
+			def relayout(self):
+				while self.grid.count():
+					item = self.grid.takeAt(0)
+					if item and item.widget():
+						self.grid.removeItem(item)
+				w = max(self.width(), 1)
+				cols = max(1, min(self.max_cols, w // (self.min_w + 20)))
+				for i, c in enumerate(self.cards):
+					r = i // cols
+					col = i % cols
+					self.grid.addWidget(c, r, col)
+
+			def resizeEvent(self, e):  # noqa: N802
+				super().resizeEvent(e)
+				self.relayout()
+
+		class ShopWindow(QMainWindow):
+			def __init__(self):
+				super().__init__()
+				self.setWindowTitle("Zoro Shop")
+				self.resize(1200, 800)
+				self.dark = bool(self_dark[0])
+				self.refresh_requested = False
+				self.allow_close = False
+				self.tray = None
+
+				# Central scroll area
+				central = QWidget()
+				central_v = QVBoxLayout(central)
+				central_v.setContentsMargins(0, 0, 0, 0)
+				central_v.setSpacing(0)
+				self.setCentralWidget(central)
+
+				# App bar
+				appbar = QFrame()
+				appbar.setObjectName("appbar")
+				appbar_l = QHBoxLayout(appbar)
+				appbar_l.setContentsMargins(16, 12, 16, 12)
+				appbar_l.setSpacing(10)
+
+				left = QWidget()
+				left_l = QVBoxLayout(left)
+				left_l.setContentsMargins(0, 0, 0, 0)
+				left_l.setSpacing(2)
+				title = QLabel("Zoro Shop")
+				title.setObjectName("title")
+				subtitle = QLabel(
+					"Featured bundles, daily offers, and Night Market"
+				)
+				subtitle.setObjectName("subtitle")
+				left_l.addWidget(title)
+				left_l.addWidget(subtitle)
+				appbar_l.addWidget(left, 1)
+
+				# Wallet chips
+				wallet = QWidget()
+				wallet_l = QHBoxLayout(wallet)
+				wallet_l.setContentsMargins(0, 0, 0, 0)
+				wallet_l.setSpacing(8)
+
+				def chip(icon_url: str, amt: int, tip: str) -> QFrame:
+					ch = QFrame()
+					ch.setObjectName("chip")
+					ch_l = QHBoxLayout(ch)
+					ch_l.setContentsMargins(10, 6, 10, 6)
+					ch_l.setSpacing(6)
+					pm = get_pixmap(icon_url, 18, 18)
+					icon = QLabel()
+					if pm:
+						icon.setPixmap(pm)
+					txt = QLabel(fmt_num(amt))
+					ch_l.addWidget(icon)
+					ch_l.addWidget(txt)
+					ch.setToolTip(f"{tip}: {fmt_num(amt)}")
+					return ch
+
+				wallet_l.addWidget(chip(vp_icon, vp, "Valorant Points"))
+				wallet_l.addWidget(chip(rp_icon, rp, "Radianite Points"))
+				wallet_l.addWidget(chip(kc_icon, kc, "Kingdom Credits"))
+
+				# Controls
+				theme_btn = QPushButton()
+				refresh_btn = QPushButton("Refresh")
+
+				def on_refresh():
+					self.refresh_requested = True
+					self.close()
+
+				refresh_btn.clicked.connect(on_refresh)
+				appbar_l.addWidget(wallet)
+				appbar_l.addWidget(theme_btn)
+				appbar_l.addWidget(refresh_btn)
+				central_v.addWidget(appbar)
+
+				# Scroll area content
+				scroll = QScrollArea()
+				scroll.setWidgetResizable(True)
+				viewport = QWidget()
+				vbox = QVBoxLayout(viewport)
+				vbox.setContentsMargins(20, 12, 20, 12)
+				vbox.setSpacing(16)
+				scroll.setWidget(viewport)
+				central_v.addWidget(scroll, 1)
+
+				# Section helper
+				self.section_timers: list[tuple[QLabel, int]] = []
+
+				def add_section(title_text: str, subtitle_text: str | None,
+				                duration: int | None,
+				                min_w: int, max_cols: int) -> tuple[CardsGrid, QLabel | None]:
+					header = QWidget()
+					h = QHBoxLayout(header)
+					h.setContentsMargins(0, 0, 0, 0)
+					h.setSpacing(8)
+					t = QLabel(title_text)
+					t.setObjectName("section")
+					h.addWidget(t)
+					if subtitle_text:
+						sub = QLabel(subtitle_text)
+						sub.setObjectName("subtle")
+						h.addWidget(sub)
+					h.addStretch(1)
+					timer_lbl = None
+					if duration is not None:
+						timer_lbl = QLabel(
+							f"Expires in: {format_duration(duration)}"
+						)
+						timer_lbl.setObjectName("timer")
+						h.addWidget(timer_lbl)
+						self.section_timers.append((timer_lbl, int(duration)))
+					vbox.addWidget(header)
+					grid = CardsGrid(min_w=min_w, max_cols=max_cols)
+					vbox.addWidget(grid)
+					return grid, timer_lbl
+
+				# Card factory
+				def make_card(width: int) -> QFrame:
+					c = QFrame()
+					c.setObjectName("card")
+					c.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+					lay = QVBoxLayout(c)
+					lay.setContentsMargins(12, 12, 12, 12)
+					lay.setSpacing(6)
+					return c
+
+				# Bundles
+				if current_bundles:
+					g_b, _tb = add_section(
+						"Featured Bundles", "Limited time offers",
+						bundle_duration or 0, 440, 3
+					)
+					for i, (name_uuid, img_url) in enumerate(
+							zip(current_bundles, bundles_images)):
+						name, b_uuid = name_uuid
+						base, disc = (
+							bundle_prices[i] if i < len(bundle_prices) else (0, 0)
+						)
+						card = make_card(440)
+						pm = get_pixmap(img_url, 420, 220)
+						if pm:
+							img = QLabel()
+							img.setPixmap(pm)
+							card.layout().addWidget(img)
+						title_lbl = QLabel(name)
+						title_lbl.setObjectName("itemtitle")
+						card.layout().addWidget(title_lbl)
+						row = QWidget()
+						row_l = QHBoxLayout(row)
+						row_l.setContentsMargins(0, 0, 0, 0)
+						row_l.setSpacing(6)
+						base_lbl = QLabel(f"{fmt_num(base)} VP")
+						base_lbl.setObjectName("strike")
+						disc_lbl = QLabel(f"{fmt_num(disc)} VP")
+						row_l.addWidget(base_lbl)
+						row_l.addWidget(disc_lbl)
+						if base and disc and base > disc:
+							pct = int(round((base - disc) / float(base) * 100))
+							pct_lbl = QLabel(f"-{pct}%")
+							pct_lbl.setObjectName("pct")
+							row_l.addWidget(pct_lbl)
+						row_l.addStretch(1)
+						card.layout().addWidget(row)
+						card.setToolTip(f"{name}\nClick for contents")
+
+						def open_details(bid=b_uuid, nm=name):
+							items = bundle_items.get(bid) or []
+							dlg = QDialog(self)
+							dlg.setWindowTitle(f"Bundle · {nm}")
+							dlg.resize(560, 440)
+							lay = QVBoxLayout(dlg)
+							sc = QScrollArea()
+							sc.setWidgetResizable(True)
+							inner = QWidget()
+							iv = QVBoxLayout(inner)
+							iv.setContentsMargins(12, 12, 12, 12)
+							iv.setSpacing(8)
+							for item_name, item_img_url, _itype, item_cost in items:
+								roww = QFrame()
+								roww.setObjectName("card")
+								rlay = QHBoxLayout(roww)
+								rlay.setContentsMargins(10, 8, 10, 8)
+								rlay.setSpacing(8)
+								pmx = get_pixmap(item_img_url, 72, 72)
+								pic = QLabel()
+								if pmx:
+									pic.setPixmap(pmx)
+								info = QVBoxLayout()
+								name_lbl = QLabel(item_name)
+								cost_lbl = QLabel(f"{fmt_num(item_cost)} VP")
+								info.addWidget(name_lbl)
+								info.addWidget(cost_lbl)
+								rlay.addWidget(pic)
+								rlay.addLayout(info)
+								iv.addWidget(roww)
+							sc.setWidget(inner)
+							lay.addWidget(sc)
+							dlg.exec()
+
+						def _click(_e=None, f=open_details):
+							f()
+
+						card.mouseReleaseEvent = _click  # type: ignore
+						g_b.add_card(card)
+
+				# Daily offers
+				if skin_names:
+					g_s, _ts = add_section(
+						"Daily Offers", None, skin_duration or 0, 260, 5
+					)
+					for i, (name, img_url) in enumerate(zip(skin_names, skin_images)):
+						price = skin_prices[i] if i < len(skin_prices) else 0
+						rarity = skin_rarity[i] if i < len(skin_rarity) else None
+						card = make_card(260)
+						if rarity:
+							r_name, r_hex, r_icon = rarity
+							pill = QFrame()
+							pill.setObjectName("pill")
+							pl = QHBoxLayout(pill)
+							pl.setContentsMargins(6, 2, 6, 2)
+							pl.setSpacing(4)
+							if r_icon:
+								r_pix = get_pixmap(r_icon, 14, 14)
+								if r_pix:
+									ic = QLabel()
+									ic.setPixmap(r_pix)
+									pl.addWidget(ic)
+							pl.addWidget(QLabel(r_name or ""))
+							card.layout().addWidget(pill, 0)
+						pm = get_pixmap(img_url, 240, 120)
+						if pm:
+							img = QLabel()
+							img.setPixmap(pm)
+							card.layout().addWidget(img)
+						title_lbl = QLabel(name)
+						title_lbl.setObjectName("itemtitle")
+						price_lbl = QLabel(f"{fmt_num(price)} VP")
+						card.layout().addWidget(title_lbl)
+						card.layout().addWidget(price_lbl)
+						card.setToolTip(f"{name}\nPrice: {fmt_num(price)} VP")
+						g_s.add_card(card)
+
+				# Night Market
+				if nm_offers:
+					g_nm, _tn = add_section(
+						"Night Market", "Discounted offers",
+						nm_duration or 0, 340, 4
+					)
+					for i, name in enumerate(nm_offers):
+						img_url = nm_images[i] if i < len(nm_images) else ""
+						base, disc = (
+							nm_prices[i] if i < len(nm_prices) else (0, 0)
+						)
+						card = make_card(340)
+						pm = get_pixmap(img_url, 320, 150)
+						if pm:
+							img = QLabel()
+							img.setPixmap(pm)
+							card.layout().addWidget(img)
+						title_lbl = QLabel(name)
+						title_lbl.setObjectName("itemtitle")
+						row = QWidget()
+						row_l = QHBoxLayout(row)
+						row_l.setContentsMargins(0, 0, 0, 0)
+						row_l.setSpacing(6)
+						base_lbl = QLabel(f"{fmt_num(base)} VP")
+						base_lbl.setObjectName("strike")
+						disc_lbl = QLabel(f"{fmt_num(disc)} VP")
+						row_l.addWidget(base_lbl)
+						row_l.addWidget(disc_lbl)
+						if base and disc and base > disc:
+							pct = int(round((base - disc) / float(base) * 100))
+							pct_lbl = QLabel(f"-{pct}%")
+							pct_lbl.setObjectName("pct")
+							row_l.addWidget(pct_lbl)
+						row_l.addStretch(1)
+						card.layout().addWidget(title_lbl)
+						card.layout().addWidget(row)
+						card.setToolTip(
+							f"{name}\nWas {fmt_num(base)} · Now {fmt_num(disc)} VP"
+						)
+						g_nm.add_card(card)
+				else:
+					note = QLabel("Night Market is currently not available.")
+					note.setObjectName("subtle")
+					vbox.addWidget(note)
+
+				# Footer
+				stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+				foot = QFrame()
+				foot.setObjectName("footer")
+				fl = QHBoxLayout(foot)
+				fl.setContentsMargins(12, 6, 12, 6)
+				fl.addStretch(1)
+				fl.addWidget(QLabel(f"Last updated: {stamp}"))
+				central_v.addWidget(foot)
+
+				# Style application
+				def apply_theme(dark: bool):
+					bg = DARK_BG if dark else LIGHT_BG
+					surf = DARK_SURFACE if dark else LIGHT_SURFACE
+					card_bg = DARK_CARD if dark else LIGHT_CARD
+					border = "#2C2F36" if dark else "#E6E8EF"
+					hover = "#2A2D33" if dark else "#F1F3F8"
+					chip = DARK_CARD if dark else LIGHT_CARD
+					fg = FG_LIGHT if dark else FG_DARK
+					sub = "#B0B6BD" if dark else "#5F6368"
+					pct = ACCENT
+					ss = f"""
+					QMainWindow {{ background-color: {bg}; color: {fg}; }}
+					QScrollArea {{ background-color: {bg}; border: none; }}
+					QFrame#appbar {{ background-color: {surf}; }}
+					QFrame#footer {{ background-color: {surf}; }}
+					QLabel#title {{ font: 700 20px 'Segoe UI'; color: {fg}; }}
+					QLabel#subtitle {{ color: {sub}; font: 10px 'Segoe UI'; }}
+					QLabel#section {{ font: 700 16px 'Segoe UI'; color: {fg}; }}
+					QLabel#subtle {{ color: {sub}; font: 10px 'Segoe UI'; }}
+					QLabel#timer {{ color: {sub}; font: italic 10px 'Segoe UI'; }}
+					QFrame#chip {{ background-color: {chip}; border-radius: 10px; }}
+					QFrame#card {{
+						background-color: {card_bg};
+						border: 1px solid {border};
+						border-radius: 12px;
+					}}
+					QFrame#card:hover {{ background-color: {hover}; }}
+					QLabel#strike {{ color: #E06B74; }}
+					QLabel#pct    {{ color: {pct}; font-weight: 700; }}
+					QLabel#itemtitle {{ font: 600 12px 'Segoe UI'; }}
+					QPushButton {{ padding: 6px 12px; }}
+					"""
+					self.setStyleSheet(ss)
+					# Toggle theme icon
+					icon_url = (
+							"https://raw.githubusercontent.com/Saucywan/IconAssets/"
+							"71ca8de7336c6a03ad319cabd9580b8e83fe6e3c/"
+							+ ("sun.png" if dark else "moon.png")
+					)
+					pm = get_pixmap(icon_url, 18, 18)
+					if pm:
+						theme_btn.setIcon(QIcon(pm))
+
+				def toggle_theme():
+					self.dark = not self.dark
+					self_dark[0] = self.dark
+					apply_theme(self.dark)
+
+				theme_btn.clicked.connect(toggle_theme)
+				apply_theme(self.dark)
+
+				# Timers
+				self.timer = QTimer(self)
+				self.timer.setInterval(1000)
+
+				def tick():
+					new_list: list[tuple[QLabel, int]] = []
+					for lbl, remaining in self.section_timers:
+						if remaining > 0:
+							remaining -= 1
+							lbl.setText(
+								f"Expires in: {format_duration(int(remaining))}"
+							)
+						else:
+							lbl.setText("Expired")
+						new_list.append((lbl, remaining))
+					self.section_timers = new_list
+
+				self.timer.timeout.connect(tick)
+				self.timer.start()
+
+			def closeEvent(self, event):  # noqa: N802
+				# In no-console mode, minimize to system tray instead of exiting
+				if getattr(self, "allow_close", False):
+					return super().closeEvent(event)
+				try:
+					if self.tray is not None and isinstance(self.tray, QSystemTrayIcon):
+						event.ignore()
+						self.hide()
+						try:
+							self.tray.showMessage(
+								"Zoro",
+								"Running in system tray. Right-click to restore or exit.",
+								QSystemTrayIcon.Information,
+								3000,
+							)
+						except Exception:
+							pass
+						return
+				except Exception:
+					pass
+				return super().closeEvent(event)
+
+		# Persist dark mode across refresh within this session
+		self_dark = [bool(self.dark_mode)]
+
+		app = QApplication.instance() or QApplication(sys.argv)
+		win = ShopWindow()
+		# System tray (for no-console or general convenience)
+		try:
+			icon = QIcon("assets/Zoro.ico") if QIcon("assets/Zoro.ico").isNull() is False else QIcon()
+			tray = QSystemTrayIcon(icon, win)
+			menu = QMenu()
+			act_show = menu.addAction("Show Shop")
+			act_show.triggered.connect(lambda: (win.showNormal(), win.raise_(), win.activateWindow()))
+			menu.addSeparator()
+			act_show_console = menu.addAction("Show Console")
+			act_show_console.triggered.connect(lambda: show_console())
+			act_hide_console = menu.addAction("Hide Console")
+			act_hide_console.triggered.connect(lambda: hide_console())
+			menu.addSeparator()
+			act_exit = menu.addAction("Exit")
+
+			def _do_exit():
+				win.allow_close = True
+				app.quit()
+
+			act_exit.triggered.connect(_do_exit)
+			tray.setContextMenu(menu)
+			tray.setToolTip("Zoro")
+			tray.show()
+			win.tray = tray
+
+			def _on_tray_activated(reason):
+				if reason == QSystemTrayIcon.Trigger:
+					if win.isVisible():
+						win.hide()
+					else:
+						win.showNormal()
+						win.raise_()
+						win.activateWindow()
+
+			tray.activated.connect(_on_tray_activated)
+		except Exception:
+			pass
+
+		win.show()
+		app.exec()
+		if win.refresh_requested:
+			await self.run()
+
+	async def display_gui_tk_old(
+			self,
+			vp, vp_icon, rp, rp_icon, kc, kc_icon,
+			current_bundles, bundles_images, bundle_prices, bundle_duration, bundle_items,
+			skin_names, skin_images, skin_videos, skin_prices, skin_duration, skin_rarity,
+			nm_offers, nm_prices, nm_images, nm_duration
+	):
+		# -------------------- Theme Colors & Fonts --------------------
+		DARK_BG = "#151618"
+		LIGHT_BG = "#F6F7FB"
+		DARK_SURFACE = "#1E2023"
+		LIGHT_SURFACE = "#FFFFFF"
+		DARK_CARD_BG = "#212327"
+		LIGHT_CARD_BG = "#FFFFFF"
+		ACCENT_COLOR = "#FF4654"
+		TEXT_DARK = "#0F1113"
+		TEXT_LIGHT = "#FFFFFF"
+
+		TITLE_FONT = ("Segoe UI", 24, "bold")
+		SECTION_FONT = ("Segoe UI", 16, "bold")
+		SUBTITLE_FONT = ("Segoe UI", 10)
+		LABEL_FONT = ("Segoe UI", 11)
+		PRICE_FONT = ("Segoe UI", 12, "bold")
+		BUTTON_FONT = ("Segoe UI", 10, "bold")
+		TIMER_FONT = ("Segoe UI", 10, "italic")
+
+		def format_duration(seconds: int) -> str:
+			days = seconds // (24 * 3600)
+			seconds %= (24 * 3600)
+			hours = seconds // 3600
+			seconds %= 3600
+			minutes = seconds // 60
+			seconds %= 60
+			return f"{days}d {hours}h {minutes}m {seconds}s"
+
+		def fixed_resize(image, width: int, height: int):
+			ow, oh = image.size
+			ratio = min(width / ow, height / oh)
+			new_size = (int(ow * ratio), int(oh * ratio))
+			return image.resize(new_size, Image.Resampling.LANCZOS)
+
+		def _clamp(n: int) -> int:
+			return max(0, min(255, n))
+
+		def _hex_to_rgb(c: str):
+			c = (c or "").strip()
+			if c.startswith("#"):
+				c = c[1:]
+			if len(c) >= 6:
+				try:
+					return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
+				except Exception:
+					return (255, 255, 255)
+			return (255, 255, 255)
+
+		def _rgb_to_hex(rgb):
+			return "#%02x%02x%02x" % rgb
+
+		def lighten(color: str, factor: float = 0.12) -> str:
+			r, g, b = _hex_to_rgb(color)
+			lr = _clamp(int(r + (255 - r) * factor))
+			lg = _clamp(int(g + (255 - g) * factor))
+			lb = _clamp(int(b + (255 - b) * factor))
+			return _rgb_to_hex((lr, lg, lb))
+
+		def fmt_num(n) -> str:
+			try:
+				return f"{int(n):,}"
+			except Exception:
+				return str(n)
+
+		root = tkinter.Tk()
+		root.title("Zoro Shop")
+		root.minsize(1100, 740)
+		root.configure(bg=DARK_BG if self.dark_mode else LIGHT_BG)
+		style = ttk.Style()
+		style.theme_use("clam")
+
+		# Theme icons
+		sun_icon_url = (
+			"https://raw.githubusercontent.com/Saucywan/IconAssets/"
+			"71ca8de7336c6a03ad319cabd9580b8e83fe6e3c/sun.png"
+		)
+		moon_icon_url = (
+			"https://raw.githubusercontent.com/Saucywan/IconAssets/"
+			"71ca8de7336c6a03ad319cabd9580b8e83fe6e3c/moon.png"
+		)
+		sun_icon = moon_icon = None
+		for url in (sun_icon_url, moon_icon_url):
+			img = load_image(url, (20, 20))
+			if img:
+				if url == sun_icon_url:
+					sun_icon = ImageTk.PhotoImage(img)
+				else:
+					moon_icon = ImageTk.PhotoImage(img)
+
+		cards: list[tkinter.Frame] = []
+
+		def add_hover_effect(widget: tkinter.Widget, normal_bg: str, hover_bg: str) -> None:
+			def on_enter(_):
+				widget.configure(bg=hover_bg)
+				for child in widget.winfo_children():
+					try:
+						child.configure(bg=hover_bg)
+					except Exception:
+						pass
+
+			def on_leave(_):
+				new_bg = DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG
+				widget.configure(bg=new_bg)
+				for child in widget.winfo_children():
+					try:
+						child.configure(bg=new_bg)
+						if isinstance(child, tkinter.Label):
+							child.configure(fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK)
+					except Exception:
+						pass
+
+			widget.bind("<Enter>", on_enter)
+			widget.bind("<Leave>", on_leave)
+
+		appbar: tkinter.Frame | None = None
+		theme_btn: ttk.Button | None = None
+		content_outer: tkinter.Frame | None = None
+
+		def apply_theme() -> None:
+			bg = DARK_BG if self.dark_mode else LIGHT_BG
+			surf = DARK_SURFACE if self.dark_mode else LIGHT_SURFACE
+			fg = TEXT_LIGHT if self.dark_mode else TEXT_DARK
+			root.configure(bg=bg)
+			style.configure("TFrame", background=bg)
+			style.configure("TLabel", background=bg, foreground=fg, font=LABEL_FONT)
+			style.configure("Title.TLabel", background=bg, foreground=fg, font=TITLE_FONT)
+			style.configure("Section.TLabel", background=bg, foreground=fg, font=SECTION_FONT)
+			style.configure("Subtle.TLabel", background=bg, foreground="#9AA0A6", font=SUBTITLE_FONT)
+			style.configure("TButton", font=BUTTON_FONT)
+			if appbar is not None:
+				appbar.configure(bg=surf)
+				for child in appbar.winfo_children():
+					try:
+						child.configure(bg=surf)
+					except Exception:
+						pass
+			if content_outer is not None:
+				content_outer.configure(bg=bg)
+			new_card_bg = DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG
+			for c in cards:
+				c.configure(bg=new_card_bg)
+				for child in c.winfo_children():
+					try:
+						child.configure(bg=new_card_bg)
+						if isinstance(child, tkinter.Label):
+							child.configure(fg=fg)
+					except Exception:
+						pass
+			if theme_btn is not None and sun_icon and moon_icon:
+				theme_btn.config(image=(sun_icon if self.dark_mode else moon_icon))
+				theme_btn.image = sun_icon if self.dark_mode else moon_icon
+
+		def switch_theme() -> None:
+			self.dark_mode = not self.dark_mode
+			apply_theme()
+
+		# App bar
+		appbar = tkinter.Frame(root, bd=0)
+		appbar.pack(fill="x")
+		accent = tkinter.Frame(appbar, width=6, bg=ACCENT_COLOR)
+		accent.pack(side="left", fill="y")
+		left = tkinter.Frame(appbar)
+		left.pack(side="left", fill="x", expand=True, padx=16, pady=12)
+		ttk.Label(left, text="Zoro Shop", style="Title.TLabel").pack(anchor="w")
+		ttk.Label(left, text="Featured bundles, daily offers, and Night Market",
+		          style="Subtle.TLabel").pack(anchor="w")
+		right = tkinter.Frame(appbar)
+		right.pack(side="right", padx=16, pady=12)
+
+		def create_points_badge(parent, icon_url: str, amount: int, label_text: str):
+			badge_bg = DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG
+			wrap = tkinter.Frame(parent, bg=badge_bg, bd=0)
+			wrap.pack(side="left", padx=6)
+			inner = tkinter.Frame(wrap, bg=badge_bg)
+			inner.pack(padx=10, pady=6)
+			try:
+				icon_img = load_image(icon_url, (18, 18))
+				if icon_img:
+					photo = ImageTk.PhotoImage(icon_img)
+					lbl_icon = tkinter.Label(inner, image=photo, bg=badge_bg)
+					lbl_icon.image = photo
+					lbl_icon.pack(side="left", padx=(0, 6))
+				else:
+					raise Exception("No image")
+			except Exception:
+				tkinter.Label(inner, text="?", width=2, bg=badge_bg,
+				              fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(side="left")
+			tkinter.Label(inner, text=fmt_num(amount), font=("Segoe UI", 11, "bold"),
+			              fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK, bg=badge_bg).pack(side="left")
+			ToolTip(wrap, text=f"{label_text}: {fmt_num(amount)}")
+			cards.append(wrap)
+			return wrap
+
+		async def refresh():
+			try:
+				btn_refresh.config(text="Refreshing...", state="disabled")
+				await self.run()
+			except Exception:
+				pass
+			finally:
+				btn_refresh.config(text="Refresh", state="normal")
+
+		btn_refresh = ttk.Button(right, text="Refresh", command=lambda: asyncio.run(refresh()))
+		btn_refresh.pack(side="right", padx=(8, 0))
+		theme_btn = ttk.Button(right, command=switch_theme)
+		theme_btn.pack(side="right")
+		wallet = tkinter.Frame(right)
+		wallet.pack(side="right", padx=(0, 12))
+		create_points_badge(wallet, vp_icon, vp, "Valorant Points")
+		create_points_badge(wallet, rp_icon, rp, "Radianite Points")
+		create_points_badge(wallet, kc_icon, kc, "Kingdom Credits")
+
+		# Scrollable content
+		content_outer = tkinter.Frame(root, bg=DARK_BG if self.dark_mode else LIGHT_BG)
+		content_outer.pack(fill="both", expand=True)
+		canvas = tkinter.Canvas(content_outer, highlightthickness=0,
+		                        bg=DARK_BG if self.dark_mode else LIGHT_BG)
+		vscroll = ttk.Scrollbar(content_outer, orient="vertical", command=canvas.yview)
+		content = tkinter.Frame(canvas, bg=DARK_BG if self.dark_mode else LIGHT_BG)
+		cid = canvas.create_window((0, 0), window=content, anchor="nw")
+		canvas.configure(yscrollcommand=vscroll.set)
+		canvas.pack(side="left", fill="both", expand=True)
+		vscroll.pack(side="right", fill="y")
+
+		def _on_cfg(_):
+			canvas.configure(scrollregion=canvas.bbox("all"))
+			canvas.itemconfig(cid, width=canvas.winfo_width())
+
+		content.bind("<Configure>", _on_cfg)
+
+		# Details popup
+		def show_bundle_details(bundle_uuid: str, bundle_name: str) -> None:
+			items = bundle_items.get(bundle_uuid)
+			if not items:
+				messagebox.showerror("Error", "No details available for this bundle.")
+				return
+			win = tkinter.Toplevel(root)
+			win.title(f"Bundle · {bundle_name}")
+			win.minsize(520, 420)
+			wrap = tkinter.Frame(win, bg=DARK_SURFACE if self.dark_mode else LIGHT_SURFACE)
+			wrap.pack(fill="both", expand=True)
+			sc = tkinter.Canvas(wrap, highlightthickness=0,
+			                    bg=DARK_SURFACE if self.dark_mode else LIGHT_SURFACE)
+			vs = ttk.Scrollbar(wrap, orient="vertical", command=sc.yview)
+			inner = tkinter.Frame(sc, bg=DARK_SURFACE if self.dark_mode else LIGHT_SURFACE)
+			sc_id = sc.create_window((0, 0), window=inner, anchor="nw")
+			sc.configure(yscrollcommand=vs.set)
+			sc.pack(side="left", fill="both", expand=True)
+			vs.pack(side="right", fill="y")
+
+			def _sizing(_):
+				sc.configure(scrollregion=sc.bbox("all"))
+				sc.itemconfig(sc_id, width=sc.winfo_width())
+
+			inner.bind("<Configure>", _sizing)
+
+			for item_name, item_img_url, item_type, item_cost in items:
+				row = tkinter.Frame(inner, bg=DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG)
+				row.pack(fill="x", padx=16, pady=8)
+				try:
+					img = load_image(item_img_url, (72, 72))
+					if img:
+						p = ImageTk.PhotoImage(img)
+						pic = tkinter.Label(row, image=p, bg=row["bg"])
+						pic.image = p
+						pic.pack(side="left", padx=(8, 12), pady=8)
+				except Exception:
+					pass
+				info = tkinter.Frame(row, bg=row["bg"])
+				info.pack(side="left", fill="x", expand=True)
+				tkinter.Label(info, text=item_name, font=("Segoe UI", 11, "bold"),
+				              bg=row["bg"], fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
+				tkinter.Label(info, text=f"{fmt_num(item_cost)} VP", font=("Segoe UI", 10),
+				              bg=row["bg"], fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
+
+		def make_card(parent: tkinter.Misc, *, width: int = 280) -> tkinter.Frame:
+			bg = DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG
+			f = tkinter.Frame(parent, bg=bg)
+			f.configure(highlightthickness=1, highlightbackground="#2C2F36" if self.dark_mode else "#E6E8EF")
+			cards.append(f)
+			add_hover_effect(f, bg, lighten(bg, 0.05))
+			return f
+
+		def add_section(title: str, subtitle: str | None, *, duration: int | None):
+			section = tkinter.Frame(content, bg=root["bg"])
+			section.pack(fill="x", padx=20, pady=(18, 6))
+			hdr = tkinter.Frame(section, bg=root["bg"])
+			hdr.pack(fill="x", pady=(2, 8))
+			ttk.Label(hdr, text=title, style="Section.TLabel").pack(side="left")
+			if subtitle:
+				ttk.Label(hdr, text=subtitle, style="Subtle.TLabel").pack(side="left", padx=(10, 0))
+			timer_lbl = None
+			if duration is not None:
+				timer_lbl = tkinter.Label(
+					hdr,
+					text=f"Expires in: {format_duration(duration)}",
+					font=TIMER_FONT,
+					bg=root["bg"],
+					fg="#B0B6BD" if self.dark_mode else "#5F6368",
+				)
+				timer_lbl.pack(side="right")
+			grid = tkinter.Frame(section, bg=root["bg"])  # grid container
+			grid.pack(fill="x")
+			return grid, timer_lbl
+
+		# Bundles
+		bundles_grid = None
+		bundles_timer_label = None
+		total_bundles_duration = bundle_duration or 0
+		if current_bundles:
+			bundles_grid, bundles_timer_label = add_section(
+				"Featured Bundles", "Limited time offers", duration=total_bundles_duration
+			)
+			bundle_cards: list[tkinter.Frame] = []
+
+			def layout_bundles(_=None):
+				w = max(bundles_grid.winfo_width(), 1)
+				min_w = 440
+				pad = 20
+				cols = max(1, min(3, w // (min_w + pad)))
+				for i in range(cols):
+					bundles_grid.grid_columnconfigure(i, weight=1)
+				for i, c in enumerate(bundle_cards):
+					r = i // cols
+					col = i % cols
+					c.grid(row=r, column=col, padx=10, pady=10, sticky="nsew")
+
+			for i, (name_uuid, img_url) in enumerate(zip(current_bundles, bundles_images)):
+				name, b_uuid = name_uuid
+				base, disc = bundle_prices[i] if i < len(bundle_prices) else (0, 0)
+				c = make_card(bundles_grid, width=440)
+				try:
+					im = load_image(img_url)
+					if im:
+						im = fixed_resize(im, 420, 220)
+						p = ImageTk.PhotoImage(im)
+						lbl = tkinter.Label(c, image=p, bg=c["bg"])
+						lbl.image = p
+						lbl.pack(padx=10, pady=(10, 6))
+				except Exception:
+					pass
+				info = tkinter.Frame(c, bg=c["bg"])  # name + price
+				info.pack(fill="x", padx=14, pady=(0, 12))
+				tkinter.Label(info, text=name, font=("Segoe UI", 12, "bold"),
+				              bg=c["bg"], fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
+				pr = tkinter.Frame(info, bg=c["bg"])  # price row
+				pr.pack(anchor="w", pady=(4, 0))
+				tkinter.Label(pr, text=f"{fmt_num(base)} VP", font=("Segoe UI", 10, "overstrike"),
+				              bg=c["bg"], fg="#E06B74").pack(side="left")
+				tkinter.Label(pr, text=f"  {fmt_num(disc)} VP", font=PRICE_FONT,
+				              bg=c["bg"], fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(side="left")
+				try:
+					if base and disc and base > disc:
+						pct = int(round((base - disc) / float(base) * 100))
+						tkinter.Label(pr, text=f"  -{pct}%", font=("Segoe UI", 10, "bold"),
+						              bg=c["bg"], fg=ACCENT_COLOR).pack(side="left")
+				except Exception:
+					pass
+
+				def _open_details(_e=None, bid=b_uuid, nm=name):
+					show_bundle_details(bid, nm)
+
+				c.bind("<Button-1>", _open_details)
+				for kid in c.winfo_children():
+					kid.bind("<Button-1>", _open_details)
+				ToolTip(c, text=f"{name}\nClick for contents")
+				bundle_cards.append(c)
+			bundles_grid.bind("<Configure>", layout_bundles)
+			root.after(50, layout_bundles)
+
+		# Daily offers
+		skins_grid = None
+		skins_timer_label = None
+		total_skins_duration = skin_duration or 0
+		if skin_names:
+			skins_grid, skins_timer_label = add_section("Daily Offers", None, duration=total_skins_duration)
+			skin_cards: list[tkinter.Frame] = []
+
+			def layout_skins(_=None):
+				w = max(skins_grid.winfo_width(), 1)
+				min_w = 260
+				pad = 20
+				cols = max(1, min(5, w // (min_w + pad)))
+				for i in range(cols):
+					skins_grid.grid_columnconfigure(i, weight=1)
+				for i, c in enumerate(skin_cards):
+					r = i // cols
+					col = i % cols
+					c.grid(row=r, column=col, padx=10, pady=10, sticky="nsew")
+
+			for i, (name, img_url) in enumerate(zip(skin_names, skin_images)):
+				c = make_card(skins_grid, width=260)
+				rarity = skin_rarity[i] if i < len(skin_rarity) else None
+				price = skin_prices[i] if i < len(skin_prices) else 0
+				if rarity:
+					r_name, r_hex, r_icon = rarity
+					if r_hex and len(r_hex) != 6:
+						r_hex = "#" + r_hex[:-2]
+					pill = tkinter.Frame(c, bg=("#" + r_hex[-6:] if r_hex else ACCENT_COLOR))
+					pill.pack(anchor="ne", padx=6, pady=6)
+					try:
+						if r_icon:
+							ri = load_image(r_icon, (14, 14))
+							if ri:
+								rp = ImageTk.PhotoImage(ri)
+								tkinter.Label(pill, image=rp, bg=pill["bg"]).pack(side="left", padx=(4, 2))
+								pill.image = rp
+					except Exception:
+						pass
+					tkinter.Label(pill, text=r_name or "", font=("Segoe UI", 8, "bold"),
+					              bg=pill["bg"], fg="white").pack(side="left", padx=(0, 4))
+				try:
+					im = load_image(img_url)
+					if im:
+						im = fixed_resize(im, 240, 120)
+						p = ImageTk.PhotoImage(im)
+						lbl = tkinter.Label(c, image=p, bg=c["bg"])
+						lbl.image = p
+						lbl.pack(padx=10, pady=(10, 6))
+				except Exception:
+					pass
+				info = tkinter.Frame(c, bg=c["bg"])  # name + price
+				info.pack(fill="x", padx=12, pady=(0, 10))
+				tkinter.Label(info, text=name, font=("Segoe UI", 11, "bold"),
+				              bg=c["bg"], fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
+				tkinter.Label(info, text=f"{fmt_num(price)} VP", font=PRICE_FONT,
+				              bg=c["bg"], fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w", pady=(4, 0))
+				ToolTip(c, text=f"{name}\nPrice: {fmt_num(price)} VP")
+				skin_cards.append(c)
+			skins_grid.bind("<Configure>", layout_skins)
+			root.after(50, layout_skins)
+
+		# Night Market
+		nm_grid = None
+		nm_timer_label = None
+		total_nm_duration = nm_duration or 0
+		if nm_offers:
+			nm_grid, nm_timer_label = add_section("Night Market", "Discounted offers",
+			                                      duration=total_nm_duration)
+			nm_cards: list[tkinter.Frame] = []
+
+			def layout_nm(_=None):
+				w = max(nm_grid.winfo_width(), 1)
+				min_w = 340
+				pad = 20
+				cols = max(1, min(4, w // (min_w + pad)))
+				for i in range(cols):
+					nm_grid.grid_columnconfigure(i, weight=1)
+				for i, c in enumerate(nm_cards):
+					r = i // cols
+					col = i % cols
+					c.grid(row=r, column=col, padx=10, pady=10, sticky="nsew")
+
+			for i, name in enumerate(nm_offers):
+				img_url = nm_images[i] if i < len(nm_images) else ""
+				base, disc = nm_prices[i] if i < len(nm_prices) else (0, 0)
+				c = make_card(nm_grid, width=340)
+				try:
+					im = load_image(img_url)
+					if im:
+						im = fixed_resize(im, 320, 150)
+						p = ImageTk.PhotoImage(im)
+						lbl = tkinter.Label(c, image=p, bg=c["bg"])
+						lbl.image = p
+						lbl.pack(padx=10, pady=(10, 6))
+				except Exception:
+					pass
+				info = tkinter.Frame(c, bg=c["bg"])  # name + price
+				info.pack(fill="x", padx=12, pady=(0, 12))
+				tkinter.Label(info, text=name, font=("Segoe UI", 11, "bold"),
+				              bg=c["bg"], fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
+				row = tkinter.Frame(info, bg=c["bg"])  # price row
+				row.pack(anchor="w", pady=(4, 0))
+				tkinter.Label(row, text=f"{fmt_num(base)} VP", font=("Segoe UI", 10, "overstrike"),
+				              bg=c["bg"], fg="#E06B74").pack(side="left")
+				tkinter.Label(row, text=f"  {fmt_num(disc)} VP", font=PRICE_FONT,
+				              bg=c["bg"], fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(side="left")
+				try:
+					if base and disc and base > disc:
+						pct = int(round((base - disc) / float(base) * 100))
+						tkinter.Label(row, text=f"  -{pct}%", font=("Segoe UI", 10, "bold"),
+						              bg=c["bg"], fg=ACCENT_COLOR).pack(side="left")
+				except Exception:
+					pass
+				ToolTip(c, text=f"{name}\nWas {fmt_num(base)} · Now {fmt_num(disc)} VP")
+				nm_cards.append(c)
+			nm_grid.bind("<Configure>", layout_nm)
+			root.after(50, layout_nm)
+		else:
+			grid, _lbl = add_section("Night Market", None, duration=None)
+			tkinter.Label(grid, text="Night Market is currently not available.",
+			              font=LABEL_FONT, bg=root["bg"],
+			              fg="#B0B6BD" if self.dark_mode else "#5F6368").pack(pady=20)
+
+		# Footer
+		status_bg = DARK_SURFACE if self.dark_mode else LIGHT_SURFACE
+		status = tkinter.Frame(root, bg=status_bg)
+		status.pack(side="bottom", fill="x")
+		stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+		tkinter.Label(status, text=f"Last updated: {stamp}", bg=status_bg,
+		              fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK,
+		              font=("Segoe UI", 9)).pack(side="right", padx=12, pady=6)
+
+		# Apply theme and shortcuts
+		apply_theme()
+		root.bind("t", lambda _e: switch_theme())
+		root.bind("T", lambda _e: switch_theme())
+		root.bind("r", lambda _e: asyncio.run(refresh()))
+		root.bind("R", lambda _e: asyncio.run(refresh()))
+
+		# Timers
+		remaining_bundle = (bundle_duration or 0)
+		remaining_skin = (skin_duration or 0)
+		remaining_nm = (nm_duration or 0)
+		after_id = None
+
+		def update_timers():
+			nonlocal remaining_bundle, remaining_skin, remaining_nm, after_id
+			if not root.winfo_exists():
+				return
+			try:
+				if current_bundles and 'bundles_timer_label' in locals() and bundles_timer_label:
+					if remaining_bundle > 0:
+						remaining_bundle -= 1
+						bundles_timer_label.config(
+							text=f"Expires in: {format_duration(remaining_bundle)}"
+						)
+					else:
+						bundles_timer_label.config(text="Expired")
+				if skin_names and 'skins_timer_label' in locals() and skins_timer_label:
+					if remaining_skin > 0:
+						remaining_skin -= 1
+						skins_timer_label.config(
+							text=f"Expires in: {format_duration(remaining_skin)}"
+						)
+					else:
+						skins_timer_label.config(text="Expired")
+				if nm_offers and 'nm_timer_label' in locals() and nm_timer_label:
+					if remaining_nm > 0:
+						remaining_nm -= 1
+						nm_timer_label.config(
+							text=f"Expires in: {format_duration(remaining_nm)}"
+						)
 					else:
 						nm_timer_label.config(text="Expired")
 			except tkinter.TclError:
@@ -4260,7 +5382,7 @@ async def get_party(got_rank: dict = None):
 					for key in widths:
 						widths[key] = max(widths[key], _measure(r[key]))
 
-				# Ensure minimal badge width using header name
+				# Ensure minimal badge width using the header name
 				widths["badges"] = max(widths["badges"], _measure("[dim]BADGES[/dim]"))
 				widths["score"] = max(widths["score"], _measure("[dim]SCORE[/dim]"))
 
@@ -4489,6 +5611,9 @@ def _resolve_menu_action(user_input: str) -> str | None:
 		return "loader"
 	if normalized in {"settings", "setup", "config", "preferences"}:
 		return "settings"
+	if normalized in {"exit", "quit", "close", "leave", "e", "q", "c", "l"}:
+		_print_exit_message()
+		sys.exit(0)
 	return None
 
 
@@ -4615,7 +5740,17 @@ async def main() -> bool:
 		ValorantShop = ValorantShopChecker()
 		Notification = NotificationManager()
 
+		if args.store:
+			shop = ValorantShopChecker()
+			clear_console()
+			console.print(f"[bold red]STORE ONLY MODE...[/bold red]\nUse system tray to exit.")
+			asyncio.run(shop.run())
+			if args.no_console:
+				sys.exit(0)
+
 		state: Optional[int] = None
+
+		clear_console()
 
 		while True:
 			try:
@@ -4650,6 +5785,9 @@ async def main() -> bool:
 							except RuntimeError as exc:
 								console.print(Panel(str(exc), style="bold red"))
 						await asyncio.sleep(1.0)
+					elif action == "close":
+						_print_exit_message()
+						return False
 					else:
 						console.print("[bold red]Invalid input. Please try again.[/bold red]")
 						await asyncio.sleep(1.5)
@@ -4685,28 +5823,95 @@ async def main() -> bool:
 	return True
 
 
+import platform
+
+# --- Console window helpers (Windows only) ---
+_CONSOLE_HWND = None
+
+
+def _get_console_hwnd():
+	"""Return the Windows console HWND or None on non-Windows."""
+	global _CONSOLE_HWND
+	try:
+		if platform.system() != "Windows":
+			return None
+		import ctypes  # local import to avoid issues on non-Windows
+		user32 = ctypes.WinDLL('user32')
+		_CONSOLE_HWND = user32.GetForegroundWindow()
+		return _CONSOLE_HWND
+	except Exception:
+		return None
+
+
+def hide_console():
+	"""Hide the console window (no-op on non-Windows)."""
+	try:
+		if platform.system() != "Windows":
+			return
+		import ctypes
+		user32 = ctypes.WinDLL('user32')
+		if _CONSOLE_HWND:
+			user32.ShowWindow(_CONSOLE_HWND, 0)
+		else:
+			hwnd = _get_console_hwnd()
+			if hwnd:
+				user32.ShowWindow(hwnd, 0)
+		user32.SetForegroundWindow(_CONSOLE_HWND)
+	except Exception:
+		pass
+
+
+def show_console():
+	"""Show and focus the console window (no-op on non-Windows)."""
+	try:
+		if platform.system() != "Windows":
+			return
+		import ctypes
+		user32 = ctypes.WinDLL('user32')
+		if _CONSOLE_HWND:
+			user32.ShowWindow(_CONSOLE_HWND, 5)
+		else:
+			hwnd = _get_console_hwnd()
+			if hwnd:
+				user32.ShowWindow(hwnd, 5)
+		user32.SetForegroundWindow(_CONSOLE_HWND)
+
+	except Exception:
+		pass
+
+
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(add_help=True)
 	parser.add_argument("--debug", action="store_true", help="Enable debug mode")
 	parser.add_argument("--no-rpc", action="store_true", help="Disable Discord Rich Presence")
 	parser.add_argument("--version", action="store_true", help="Show version and exit")
 	parser.add_argument("--offline", action="store_true", help="Run without Riot client using offline fixtures")
-	parser.add_argument(
-		"--offline-state",
+	parser.add_argument("--offline-state",
 		choices=["menus", "party", "pregame", "ingame", "postgame"],
 		default="menus",
-		help="Offline scenario to simulate (requires --offline)",
-	)
-	parser.add_argument(
-		"--setup",
-		action="store_true",
-		help="Open the interactive setup wizard before starting the client",
-	)
+		                help="Offline scenario to simulate (requires --offline)")
+	parser.add_argument("--setup",
+	                    action="store_true",
+	                    help="Open the interactive setup wizard before starting the client")
+	parser.add_argument("--no-console",
+	                    action="store_true",
+	                    help="Hide console window")
+	parser.add_argument("--store",
+	                    action="store_true",
+	                    help="Launch directly into the Valorant store interface")
 	args = parser.parse_args()
+
+	# Set console title
+	console.set_window_title(f"Zoro {VERSION}")
 
 	if args.version:
 		console.print(f"Valorant Zoro Version: {VERSION}")
 		sys.exit(0)
+
+	if args.no_console:
+		# Hide the actual console window; can be restored from system tray
+		hide_console()
+
 
 	CLI_DEBUG_OVERRIDE = args.debug
 	setup_invoked = False

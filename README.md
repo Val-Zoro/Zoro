@@ -14,6 +14,16 @@
 - **Pregame Insights:** View stats for all teammates including their rank, level, KD, headshot percentage, and past game results. You can also see who they are partied with.
 - **In-Game Stats:** During the match, keep track of both your team and the enemy team's stats, including KD and headshot percentages.
 
+## Launcher & Auto Updates
+
+- Ship a single launcher (`launcher.py` compiled to `launcher.exe`). It keeps its own folder so users only see one file
+  at the top-level.
+- First run downloads the newest GitHub release, extracts it into the `ZoroApp/` directory beside the launcher, and
+  stores the release tag.
+- Future launches compare the installed tag with GitHub and ask before applying newer builds (use `--yes` to auto-accept
+  or `--channel prerelease` to track beta tags).
+- Build the launcher executable with `BUILD.bat Launcher launcher.py assets\Zoro.ico` (or use a custom icon).
+
 # How to start using
 1) Install Python if not already done --> (https://www.python.org/ftp/python/3.12.4/python-3.12.4-amd64.exe)
 2) Run the installer, **make sure to check the box that says: "Add python.exe to PATH"**
@@ -21,7 +31,7 @@
 4) Extract it
 5) Open cmd in that folder (Being where the .py file is)
 6) Type: "pip install -r requirements.txt" (This will download all the needed packages / imports)
-7) Run the file, enter: "main.py"
+7) Launch via the updater, enter: "python launcher.py"
 
 **Restart your pc if errors happens**
 
