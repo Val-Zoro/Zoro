@@ -1,4 +1,4 @@
-VERSION = "v2.5.0-DEV"
+VERSION = "v2.5.1-DEV"
 
 import argparse
 import asyncio
@@ -26,7 +26,6 @@ from typing import Any, Dict, Optional, Tuple, List, Callable, Mapping, Sequence
 
 import colorama
 import nest_asyncio
-import requests
 from Crypto.Cipher import PKCS1_OAEP, AES
 # from wmi import WMI | Removed to avoid dependency issues on non-Windows systems
 from Crypto.PublicKey import RSA
@@ -35,6 +34,7 @@ from Crypto.Util.Padding import pad
 from PIL import Image, ImageTk
 from colorama import Fore, Style
 from pypresence import Presence
+from requests import Session, get
 from requests.adapters import HTTPAdapter
 from rich import pretty
 from rich.align import Align
@@ -747,7 +747,7 @@ def load_image(url, size=None):
 		img = image_cache[url]
 	else:
 		try:
-			img = Image.open(requests.get(url, stream=True).raw)
+			img = Image.open(get(url, stream=True).raw)
 			image_cache[url] = img
 		except Exception as e:
 			console.print(f"Error loading image from {url}: {e}")
@@ -1667,7 +1667,7 @@ class ValorantShopChecker:
 			if key in pixmap_cache:
 				return pixmap_cache[key]
 			try:
-				r = requests.get(url, timeout=10)
+				r = get(url, timeout=10)
 				r.raise_for_status()
 				img = QImage.fromData(r.content)
 				if img.isNull():
@@ -2115,42 +2115,43 @@ class ValorantShopChecker:
 		app = QApplication.instance() or QApplication(sys.argv)
 		win = ShopWindow()
 		# System tray (for no-console or general convenience)
-		try:
-			icon = QIcon("assets/Zoro.ico") if QIcon("assets/Zoro.ico").isNull() is False else QIcon()
-			tray = QSystemTrayIcon(icon, win)
-			menu = QMenu()
-			act_show = menu.addAction("Show Shop")
-			act_show.triggered.connect(lambda: (win.showNormal(), win.raise_(), win.activateWindow()))
-			menu.addSeparator()
-			act_show_console = menu.addAction("Show Console")
-			act_show_console.triggered.connect(lambda: show_console())
-			act_hide_console = menu.addAction("Hide Console")
-			act_hide_console.triggered.connect(lambda: hide_console())
-			menu.addSeparator()
-			act_exit = menu.addAction("Exit")
+		if args.no_console:
+			try:
+				icon = QIcon("assets/Zoro.ico") if QIcon("assets/Zoro.ico").isNull() is False else QIcon()
+				tray = QSystemTrayIcon(icon, win)
+				menu = QMenu()
+				act_show = menu.addAction("Show Shop")
+				act_show.triggered.connect(lambda: (win.showNormal(), win.raise_(), win.activateWindow()))
+				menu.addSeparator()
+				act_show_console = menu.addAction("Show Console")
+				act_show_console.triggered.connect(lambda: show_console())
+				act_hide_console = menu.addAction("Hide Console")
+				act_hide_console.triggered.connect(lambda: hide_console())
+				menu.addSeparator()
+				act_exit = menu.addAction("Exit")
 
-			def _do_exit():
-				win.allow_close = True
-				app.quit()
+				def _do_exit():
+					win.allow_close = True
+					app.quit()
 
-			act_exit.triggered.connect(_do_exit)
-			tray.setContextMenu(menu)
-			tray.setToolTip("Zoro")
-			tray.show()
-			win.tray = tray
+				act_exit.triggered.connect(_do_exit)
+				tray.setContextMenu(menu)
+				tray.setToolTip("Zoro")
+				tray.show()
+				win.tray = tray
 
-			def _on_tray_activated(reason):
-				if reason == QSystemTrayIcon.Trigger:
-					if win.isVisible():
-						win.hide()
-					else:
-						win.showNormal()
-						win.raise_()
-						win.activateWindow()
+				def _on_tray_activated(reason):
+					if reason == QSystemTrayIcon.Trigger:
+						if win.isVisible():
+							win.hide()
+						else:
+							win.showNormal()
+							win.raise_()
+							win.activateWindow()
 
-			tray.activated.connect(_on_tray_activated)
-		except Exception:
-			pass
+				tray.activated.connect(_on_tray_activated)
+			except Exception:
+				pass
 
 		win.show()
 		app.exec()
@@ -2893,8 +2894,8 @@ class ValorantPerformanceScorer:
 			weights = {
 				"kd": 0.45,
 				"openers": 0.20,
-				"adr": 0.15,
-				"multikill": 0.10,
+				"adr": 0.10,
+				"multikill": 0.15,
 				"econ": 0.05,
 				"objective": 0.05,
 			}
@@ -3674,7 +3675,7 @@ def run_setup_wizard(
 	"""Guide the user through the interactive setup workflow."""
 	if not sys.stdin or not sys.stdin.isatty():
 		raise RuntimeError("Interactive setup requires a terminal session.")
-
+	clear_console()
 	console.rule("[bold cyan]Initial Setup[/bold cyan]")
 	disclaimer_text = "\n".join(f"- {line}" for line in DISCLAIMER_LINES)
 	console.print(
@@ -4071,7 +4072,7 @@ def get_rank_from_uuid(user_id: str, platform: str = "PC"):
 
 
 def create_session():
-	session = requests.Session()
+	session = Session()
 	retry = Retry(
 		total=3,  # Total number of retries
 		read=5,  # Number of retries on read errors
@@ -4280,7 +4281,7 @@ def get_user_current_state(puuid: str, presences_data: dict = None) -> int:
 				5: Replay
 				6: Unknown State
 		"""
-	requests.packages.urllib3.disable_warnings()  # noqa
+	disable_warnings()  # noqa
 	try:
 		if presences_data is None:
 			with api_request("GET", f"https://127.0.0.1:{port}/chat/v4/presences",
@@ -4326,7 +4327,7 @@ def get_user_current_state(puuid: str, presences_data: dict = None) -> int:
 
 
 def get_current_game_score(puuid: str) -> tuple[int, int]:
-	requests.packages.urllib3.disable_warnings()  # noqa
+	disable_warnings()  # noqa
 	all_user_data = "null"
 	decoded_user_data = "null"
 
@@ -5190,7 +5191,7 @@ async def listen_for_input(party_id: str):
 
 
 async def get_friend_states() -> list[str]:
-	requests.packages.urllib3.disable_warnings()  # noqa
+	disable_warnings()  # noqa
 	friend_list = []
 	try:
 		with api_request("GET", f"https://127.0.0.1:{port}/chat/v4/presences",
@@ -5271,7 +5272,7 @@ async def get_party(got_rank: dict = None):
 				party_data = await fetch_party_data(party_id)
 				for player_id, task in list(prefetch_tasks.items()):
 					if task.done():
-						prefetch_tasks.pop(player_id, None)
+						await prefetch_tasks.pop(player_id, None)
 
 				if input_task is None or input_task.done():
 					input_task = asyncio.create_task(listen_for_input(party_id))
@@ -5337,7 +5338,7 @@ async def get_party(got_rank: dict = None):
 						try:
 							await asyncio.to_thread(_prefetch_sync)
 						finally:
-							prefetch_tasks.pop(player_id, None)
+							await prefetch_tasks.pop(player_id, None)
 
 					prefetch_tasks[player_id] = asyncio.create_task(_prefetch_async())
 

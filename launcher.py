@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
-import zipfile
 from pathlib import Path
 from typing import Iterable, Optional
 from urllib.error import HTTPError, URLError
@@ -14,7 +14,7 @@ from urllib.request import Request, urlopen
 
 DEFAULT_OWNER = "Val-Zoro"
 DEFAULT_REPO = "Zoro"
-DEFAULT_CHANNEL = "stable"
+DEFAULT_CHANNEL = "prerelease"
 INSTALL_DIR_NAME = "ZoroApp"
 VERSION_FILE_NAME = ".zoro-version"
 PRESERVE_WHEN_PRESENT: frozenset[str] = frozenset(
@@ -26,6 +26,7 @@ PRESERVE_WHEN_PRESENT: frozenset[str] = frozenset(
 	}
 )
 USER_AGENT = "Valorant-Zoro-Launcher"
+EXE_PATTERN = re.compile(r"^Zoro.*\.exe$", re.IGNORECASE)
 
 
 class LauncherError(Exception):
@@ -143,62 +144,49 @@ def version_key(version: str) -> tuple[int, ...]:
 	return tuple(parts) if parts else (0,)
 
 
-def download_release_archive(release: dict, destination_dir: Path) -> Path:
-	url, filename = select_archive_source(release)
+def download_release_asset(release: dict, destination_dir: Path) -> Path:
+	url, filename = select_executable_asset(release)
 	if not url:
-		raise LauncherError("Release does not expose a downloadable archive")
+		raise LauncherError(
+			"Release does not expose a downloadable executable named Zoro*.exe.",
+		)
 
 	destination_dir.mkdir(parents=True, exist_ok=True)
-	archive_path = destination_dir / filename
+	asset_path = destination_dir / filename
 
 	request = Request(
 		url,
 		headers={"User-Agent": USER_AGENT},
 	)
 	try:
-		with urlopen(request, timeout=60) as response, archive_path.open("wb") as fh:
+		with urlopen(request, timeout=60) as response, asset_path.open("wb") as fh:
 			chunk = response.read(1024 * 128)
 			while chunk:
 				fh.write(chunk)
 				chunk = response.read(1024 * 128)
 	except HTTPError as exc:
-		raise LauncherError(f"Failed to download archive (HTTP {exc.code})") from exc
+		raise LauncherError(f"Failed to download executable (HTTP {exc.code})") from exc
 	except URLError as exc:
-		raise LauncherError(f"Network error while downloading archive: {exc.reason}") from exc
+		raise LauncherError(f"Network error while downloading executable: {exc.reason}") from exc
 	except OSError as exc:
-		raise LauncherError(f"Could not persist downloaded archive: {exc}") from exc
+		raise LauncherError(f"Could not persist downloaded executable: {exc}") from exc
 
-	return archive_path
+	return asset_path
 
 
-def select_archive_source(release: dict) -> tuple[str, str]:
+def select_executable_asset(release: dict) -> tuple[str, str]:
 	assets = release.get("assets") or []
 	for asset in assets:
 		url = asset.get("browser_download_url")
 		name = asset.get("name")
 		if not url or not name:
 			continue
-		if name.lower().endswith(".zip"):
+		if EXE_PATTERN.match(name):
 			return url, name
-	tag = release.get("tag_name") or "latest"
-	return release.get("zipball_url") or "", f"{tag}.zip"
+	return "", ""
 
 
-def extract_archive(archive_path: Path) -> tuple[Path, Path]:
-	staging_dir = Path(tempfile.mkdtemp(prefix="zoro-launcher-"))
-	try:
-		with zipfile.ZipFile(archive_path) as zf:
-			zf.extractall(staging_dir)
-	except zipfile.BadZipFile as exc:
-		raise LauncherError("Downloaded archive is not a valid zip file") from exc
-
-	candidates = [entry for entry in staging_dir.iterdir()]
-	if len(candidates) == 1 and candidates[0].is_dir():
-		return candidates[0], staging_dir
-	return staging_dir, staging_dir
-
-
-def apply_payload(payload_root: Path, install_dir: Path) -> None:
+def install_executable(executable_path: Path, install_dir: Path) -> Path:
 	install_dir.mkdir(parents=True, exist_ok=True)
 
 	for existing in list(install_dir.iterdir()):
@@ -206,18 +194,22 @@ def apply_payload(payload_root: Path, install_dir: Path) -> None:
 			continue
 		if existing.is_dir():
 			shutil.rmtree(existing, ignore_errors=True)
-		else:
-			existing.unlink(missing_ok=True)
-
-	for entry in payload_root.iterdir():
-		target = install_dir / entry.name
-		if entry.name in PRESERVE_WHEN_PRESENT and target.exists():
 			continue
-		if entry.is_dir():
-			shutil.copytree(entry, target, dirs_exist_ok=True)
-		else:
-			target.parent.mkdir(parents=True, exist_ok=True)
-			shutil.copy2(entry, target)
+		if existing.is_file():
+			if EXE_PATTERN.match(existing.name):
+				existing.unlink(missing_ok=True)
+			else:
+				existing.unlink(missing_ok=True)
+
+	target_path = install_dir / executable_path.name
+	shutil.copy2(executable_path, target_path)
+
+	canonical_path = install_dir / "Zoro.exe"
+	if target_path.name.lower() != "zoro.exe":
+		canonical_path.unlink(missing_ok=True)
+		shutil.copy2(target_path, canonical_path)
+		return canonical_path
+	return target_path
 
 
 def ensure_installation(
@@ -256,10 +248,9 @@ def ensure_installation(
 	print(f"[launcher] Downloading Valorant Zoro {remote_version}...")
 	with tempfile.TemporaryDirectory(prefix="zoro-launcher-download-") as temp_dir_str:
 		temp_dir = Path(temp_dir_str)
-		archive_path = download_release_archive(release, temp_dir)
-		payload_root, staging_dir = extract_archive(archive_path)
+		asset_path = download_release_asset(release, temp_dir)
 		try:
-			apply_payload(payload_root, install_dir)
+			install_executable(asset_path, install_dir)
 		except OSError as exc:
 			raise LauncherError(f"Failed to copy release files: {exc}") from exc
 
@@ -271,19 +262,14 @@ def ensure_installation(
 def has_existing_payload(install_dir: Path) -> bool:
 	if not install_dir.exists():
 		return False
-	expected = [
-		install_dir / "Zoro.exe",
-		install_dir / "main.py",
-		install_dir / "dist" / "Zoro.exe",
-	]
-	return any(path.exists() for path in expected)
+	return any(EXE_PATTERN.match(path.name) for path in install_dir.glob("*.exe"))
 
 
 def launch_application(install_dir: Path, forward_args: Iterable[str]) -> int:
-	exe_candidates = [
-		install_dir / "Zoro.exe",
-		install_dir / "dist" / "Zoro.exe",
-	]
+	exe_candidates = sorted(
+		[path for path in install_dir.glob("*.exe") if EXE_PATTERN.match(path.name)],
+		key=lambda p: (0 if p.name.lower() == "zoro.exe" else 1, p.name.lower()),
+	)
 
 	for candidate in exe_candidates:
 		if candidate.exists():
