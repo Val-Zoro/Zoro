@@ -22,7 +22,7 @@ from math import tanh
 from pathlib import Path
 from platform import system, version
 from tkinter import ttk, messagebox
-from typing import Any, Dict, Optional, Tuple, List, Callable, Mapping, Sequence
+from typing import Any, Dict, Optional, Tuple, List, Callable, Mapping, Sequence, Iterable
 
 import colorama
 import nest_asyncio
@@ -186,7 +186,8 @@ GAME_MODES = {
 	"deathmatch": "Deathmatch",
 	"ggteam": "Escalation",
 	"hurm": "Team Deathmatch",
-	"premier-seasonmatch": "Premier"
+	"premier-seasonmatch": "Premier",
+	"premier-scrim": "Premier"
 }
 
 CONFIG_FILE = "config.ini"  # Name / Path for the config file
@@ -399,6 +400,29 @@ class Logger:
 	def log_exception(self, message: str, exception: BaseException,
 	                  *, context: Optional[Mapping[str, Any]] = None, level: int = 1) -> int:
 		return self.log(level, message, context=context, exc_info=exception)
+
+
+logger: Optional["Logger"] = None
+
+
+def _log_runtime_event(level: int, event: str, message: str, **context: Any) -> None:
+	"""
+	Safely emit a structured log entry even when the logger has not yet been initialised.
+	"""
+	logger_obj = globals().get("logger")
+	payload = {"event": event, **context}
+	if isinstance(logger_obj, Logger):
+		logger_obj.log(level, message, context=payload)
+	elif DEBUG:
+		console.print(f"[dim]{event}[/dim]: {message} {payload}")
+
+
+def log_debug_event(event: str, message: str, **context: Any) -> None:
+	_log_runtime_event(4, event, message, **context)
+
+
+def log_info_event(event: str, message: str, **context: Any) -> None:
+	_log_runtime_event(3, event, message, **context)
 
 
 def install_global_exception_handlers(app_logger: Logger) -> None:
@@ -1719,6 +1743,7 @@ class ValorantShopChecker:
 			def __init__(self):
 				super().__init__()
 				self.setWindowTitle("Zoro Shop")
+				self.setWindowIcon(QIcon("assets/Zoro.ico"))
 				self.resize(1200, 800)
 				self.dark = bool(self_dark[0])
 				self.refresh_requested = False
@@ -2133,6 +2158,7 @@ class ValorantShopChecker:
 				def _do_exit():
 					win.allow_close = True
 					app.quit()
+					sys.exit()
 
 				act_exit.triggered.connect(_do_exit)
 				tray.setContextMenu(menu)
@@ -4113,11 +4139,24 @@ def get_player_data_from_uuid(user_id: str, cache: dict | None, platform: str = 
 	if cache is None:
 		cache = PLAYER_STATS_CACHE
 
-	def _store_cache(stats_entry: PlayerStatsTuple, parties: dict[str, list[str]], ttl: float = PLAYER_STATS_CACHE_TTL):
+	def _store_cache(
+			stats_entry: PlayerStatsTuple,
+			parties: dict[str, list[str]],
+			ttl: float = PLAYER_STATS_CACHE_TTL,
+			metadata: Optional[Mapping[str, Any]] = None,
+	):
 		cache[user_id] = stats_entry
 		PLAYER_STATS_CACHE[user_id] = stats_entry
 		PLAYER_STATS_PARTY_CACHE[user_id] = parties
 		PLAYER_STATS_CACHE_EXPIRY[user_id] = time.time() + ttl
+		context = {
+			"player_id": user_id,
+			"party_groups": len(parties),
+			"ttl_seconds": ttl,
+		}
+		if metadata:
+			context.update(metadata)
+		log_debug_event("player_stats_cache_update", "Stored player stats snapshot", **context)
 		return parties, cache
 
 	current_time = time.time()
@@ -4125,7 +4164,22 @@ def get_player_data_from_uuid(user_id: str, cache: dict | None, platform: str = 
 	if cached_entry is not None:
 		expiry_at = PLAYER_STATS_CACHE_EXPIRY.get(user_id)
 		if expiry_at is None or expiry_at > current_time:
+			ttl_remaining = None if expiry_at is None else round(expiry_at - current_time, 1)
+			log_debug_event(
+				"player_stats_cache_hit",
+				"Serving cached player stats",
+				player_id=user_id,
+				ttl_remaining=ttl_remaining,
+			)
 			return PLAYER_STATS_PARTY_CACHE.get(user_id, {}), cache
+		log_debug_event(
+			"player_stats_cache_expired",
+			"Cached player stats expired; refreshing",
+			player_id=user_id,
+			expired_by=round(current_time - expiry_at, 1) if expiry_at else None,
+		)
+	else:
+		log_debug_event("player_stats_cache_miss", "Player stats missing from cache", player_id=user_id)
 
 	kills = 0
 	deaths = 0
@@ -4145,11 +4199,24 @@ def get_player_data_from_uuid(user_id: str, cache: dict | None, platform: str = 
 		headers = internal_api_headers if platform == "PC" else internal_api_headers_console
 		url = f"https://pd.na.a.pvp.net/match-history/v1/history/{user_id}?endIndex={int(config_main.get('amount_of_matches_for_player_stats', '10'))}{search}"
 
+		queue_filter = search.split("=")[-1] if search else "all"
+		log_debug_event(
+			"player_stats_fetch_start",
+			"Fetching recent match history for player stats",
+			player_id=user_id,
+			platform=platform,
+			queue_filter=queue_filter,
+		)
+
 		response = api_request("GET", url, headers=headers)
 		history = response.json().get("History", [])
 
 		if not history:
-			return _store_cache((-1, ['No Matches'], -1, -1), {})
+			return _store_cache(
+				(-1, ['No Matches'], -1, -1),
+				{},
+				metadata={"reason": "no_match_history", "queue_filter": queue_filter},
+			)
 
 		save_match_data = None
 		for history_entry in history:
@@ -4195,16 +4262,29 @@ def get_player_data_from_uuid(user_id: str, cache: dict | None, platform: str = 
 		kd_ratio = calculate_kd(kills, deaths)
 		try:
 			stats_entry: PlayerStatsTuple = (kd_ratio, wins, round(avg_headshot), avg_score)
-			return _store_cache(stats_entry, partyIDs)
+			return _store_cache(
+				stats_entry,
+				partyIDs,
+				metadata={
+					"matches_considered": len(history),
+					"headshot_samples": len(headshot),
+					"queue_filter": queue_filter,
+				},
+			)
 		except ReferenceError:
 			logger.log(2, "get_player_data_from_uuid ReferenceError on avg_headshot | avg_score")
 			stats_entry = (kd_ratio, wins, 0, avg_score)
-			return _store_cache(stats_entry, partyIDs)
+			return _store_cache(stats_entry, partyIDs, metadata={"fallback": "avg_headshot"})
 
 	except Exception as e:
 		traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 		logger.log(1, traceback_str)
-		return _store_cache((-1, ['Error'], -1, -1), {}, ttl=min(PLAYER_STATS_CACHE_TTL, 60))
+		return _store_cache(
+			(-1, ['Error'], -1, -1),
+			{},
+			ttl=min(PLAYER_STATS_CACHE_TTL, 60),
+			metadata={"reason": "exception", "player_id": user_id},
+		)
 
 def get_rank_color(rank: str, use_rich_markup: bool = False):
 	"""Return colored text for a rank, with Radiant being multicolored."""
@@ -4398,14 +4478,27 @@ async def match_report(match_id: str):
 		Polls the match details endpoint until the match data is available,
 		processes the data, and then calls the console notification.
 	"""
+	log_debug_event("match_report_poll_begin", "Waiting for post-game data", match_id=match_id)
+	poll_attempts = 0
 	# Poll every 5 seconds until match data is available.
 	while True:
 		response = api_request("GET", f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}",
 							   headers=internal_api_headers)
+		poll_attempts += 1
 		if response.status_code == 200:
 			match_data = response.json()
 			break
 		await asyncio.sleep(5)
+
+	player_ids = [player.get("subject") for player in match_data.get("players", [])]
+	invalidate_player_stats_cache(player_ids, reason=f"match_completed:{match_id}")
+	log_info_event(
+		"match_report_ready",
+		"Post-game data ready",
+		match_id=match_id,
+		polls=poll_attempts,
+		player_count=len(player_ids),
+	)
 
 	# Process the match data to calculate statistics.
 	summary = generate_match_report(match_data, val_uuid, True)
@@ -4491,6 +4584,7 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 	throttler = LoopThrottler()
 	last_signature = None
 	match_report_dispatched = False
+	last_reported_state = None
 
 	def fetch_player_data(player_id, platform):
 		nonlocal partys, cache
@@ -4527,6 +4621,15 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 					return None
 				else:
 					match_data = r.json()
+			current_state = match_data.get("State")
+			if current_state != last_reported_state:
+				log_debug_event(
+					"ingame_state_transition",
+					"Detected in-game state change",
+					match_id=match_id,
+					state=current_state,
+				)
+				last_reported_state = current_state
 			mode_name = "null"
 			gamemode_name = "null"
 			if match_data["State"] not in ("CLOSED", "POST_GAME"):
@@ -4588,6 +4691,14 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 							team_red_player_list[host_player] = (agent_name, player_lvl, rank, player_id)
 
 						player_data[host_player] = cache.get(str(player_id), ("Loading", "-", "Loading", "-"))
+
+				if not got_players:
+					log_debug_event(
+						"ingame_roster_initialized",
+						"Hydrated live match roster",
+						match_id=match_id,
+						player_count=len(match_data["Players"]),
+					)
 
 				# Refresh player data (if needed)
 				count = 0
@@ -4789,6 +4900,11 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 					scoreboard_lines.append(f"[yellow]Score:[/yellow] {team_1_rounds}  |  {team_2_rounds}")
 
 					if not match_report_dispatched:
+						log_info_event(
+							"match_report_dispatch",
+							"Dispatching post-game report task",
+							match_id=match_id,
+						)
 						asyncio.create_task(match_report(match_id))
 						match_report_dispatched = True
 					exit_after_render = True
@@ -4820,6 +4936,11 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 
 			else:
 				if not match_report_dispatched:
+					log_info_event(
+						"match_report_dispatch",
+						"Dispatching post-game report task",
+						match_id=match_id,
+					)
 					asyncio.create_task(match_report(match_id))
 					match_report_dispatched = True
 				exit_after_render = True
@@ -4852,14 +4973,57 @@ def add_parties(partys, new_parties):
 		with open(f"{DATA_PATH}/partys_thing.json", "a") as file:
 			dump(partys, file, indent=4)
 	for party_id, new_players in new_parties.items():
+		canonical_party_id = str(party_id)
+		incoming_members = [str(player) for player in new_players]
 		if party_id in partys:
 			# Add new players to the existing party, ensuring no duplicates
-			partys[party_id].extend(new_players)
-			partys[party_id] = list(set(partys[party_id]))  # Remove duplicates
+			existing_members = set(partys[party_id])
+			partys[party_id].extend(incoming_members)
+			partys[party_id] = list(dict.fromkeys(partys[party_id]))  # Preserve order while removing duplicates
+			added_members = set(partys[party_id]) - existing_members
+			if added_members:
+				log_debug_event(
+					"party_roster_extended",
+					"Extended cached party roster",
+					party_id=canonical_party_id,
+					added=len(added_members),
+					total=len(partys[party_id]),
+				)
 		else:
 			# Create a new party with the new players
-			partys[party_id] = new_players
+			partys[party_id] = incoming_members
+			log_debug_event(
+				"party_roster_created",
+				"Cached new party roster",
+				party_id=canonical_party_id,
+				member_count=len(incoming_members),
+			)
 	return partys
+
+
+def invalidate_player_stats_cache(player_ids: Iterable[str], *, reason: str | None = None) -> None:
+	"""
+	Ensure party/player stat snapshots are recomputed the next time they are requested.
+	"""
+	unique_ids = {str(pid) for pid in player_ids if pid}
+	if not unique_ids:
+		return
+
+	removed = 0
+	for player_id in unique_ids:
+		if PLAYER_STATS_CACHE.pop(player_id, None) is not None:
+			removed += 1
+		PLAYER_STATS_PARTY_CACHE.pop(player_id, None)
+		PLAYER_STATS_CACHE_EXPIRY.pop(player_id, None)
+
+	context = {
+		"candidates": len(unique_ids),
+		"purged_entries": removed,
+		"reason": reason or "unspecified",
+	}
+	if len(unique_ids) <= 5:
+		context["players"] = list(unique_ids)
+	log_debug_event("player_stats_cache_invalidated", "Invalidated cached player data", **context)
 
 
 async def with_spinner(message, coro):
@@ -5157,7 +5321,7 @@ async def listen_for_input(party_id: str):
 				logger.log(4, "Calling get_party from user input")
 				await get_party()
 			elif "store" in user_input.lower():
-				await ValorantShop.run()
+				await with_spinner("Loading Store...", ValorantShop.run())
 			elif user_input.lower() in ["quit", "leave"]:
 				console.print("Leaving game...")
 				quit_game()
@@ -5620,7 +5784,8 @@ def _resolve_menu_action(user_input: str) -> str | None:
 
 def _prompt_menu_action(default_action: str) -> str | None:
 	"""Prompt the user for a menu choice, respecting a configured default."""
-	if not sys.stdin or not sys.stdin.isatty():
+	if (not sys.stdin or not sys.stdin.isatty()) and not DEBUG:
+		logger.info("No interactive stdin available; using default menu action or Shop")
 		if default_action in {"shop", "loader"}:
 			return default_action
 		return "shop"
@@ -5745,7 +5910,7 @@ async def main() -> bool:
 			shop = ValorantShopChecker()
 			clear_console()
 			console.print(f"[bold red]STORE ONLY MODE...[/bold red]\nUse system tray to exit.")
-			asyncio.run(shop.run())
+			await with_spinner("Loading Store...", shop.run())
 			if args.no_console:
 				sys.exit(0)
 
