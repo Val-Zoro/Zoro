@@ -1,4 +1,4 @@
-VERSION = "v2.5.1-DEV"
+VERSION = "v2.5.1"
 
 import argparse
 import asyncio
