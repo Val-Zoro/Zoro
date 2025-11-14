@@ -1,4 +1,4 @@
-VERSION = "v2.5.1-DEV"
+VERSION = "v2.5.1"
 
 import argparse
 import asyncio
@@ -178,6 +178,7 @@ async def stop_input_listener() -> None:
 			await input_task
 	input_task = None
 
+
 GAME_MODES = {
 	"unrated": "Unrated",
 	"competitive": "Competitive",
@@ -201,14 +202,14 @@ if not os.path.exists(DATA_PATH):
 	os.mkdir(DATA_PATH)
 
 pub_key = ("-----BEGIN PUBLIC KEY-----\n"
-		   "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqIKYJWIl6Wif397yi3P+\n"
-		   "YnVZ9ExhGvuUpECU+BhpnJkP1pHJldurnKfpIdGhsiTblzlFvMS5y3wdKNmtpIW7\n"
-		   "8KVC8bL7FwLShmMBQNkEL4GvZfgGHYbAlJOXOiWuqDk/CS28ccZyEzAkxT4WY4H2\n"
-		   "BWVVBPax72ksJL2oMOxYJVZg2w3P3LbWNfcrgAC1/HPVzmuYka0IDo9TevbCwccC\n"
-		   "yNS3GlJ6g4E7yp8RIsFyEoq7DueHuK+zkvgpmb5eLRg8Ssq9t6bCcnx6Sl2hb4n/\n"
-		   "5OmRNvohCFM3WpP1vAdNxrsQT8uSuExbH4g7uDT/l5+ZdpxytzEzGdvPezmPiXhL\n"
-		   "5QIDAQAB\n"
-		   "-----END PUBLIC KEY-----")
+           "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqIKYJWIl6Wif397yi3P+\n"
+           "YnVZ9ExhGvuUpECU+BhpnJkP1pHJldurnKfpIdGhsiTblzlFvMS5y3wdKNmtpIW7\n"
+           "8KVC8bL7FwLShmMBQNkEL4GvZfgGHYbAlJOXOiWuqDk/CS28ccZyEzAkxT4WY4H2\n"
+           "BWVVBPax72ksJL2oMOxYJVZg2w3P3LbWNfcrgAC1/HPVzmuYka0IDo9TevbCwccC\n"
+           "yNS3GlJ6g4E7yp8RIsFyEoq7DueHuK+zkvgpmb5eLRg8Ssq9t6bCcnx6Sl2hb4n/\n"
+           "5OmRNvohCFM3WpP1vAdNxrsQT8uSuExbH4g7uDT/l5+ZdpxytzEzGdvPezmPiXhL\n"
+           "5QIDAQAB\n"
+           "-----END PUBLIC KEY-----")
 
 BANNER = """
 ██╗   ██╗ █████╗ ██╗      ██████╗ ██████╗  █████╗ ███╗   ██╗████████╗    ███████╗ ██████╗ ██████╗  ██████╗ 
@@ -323,19 +324,19 @@ class Logger:
 
 	def _log_file_header(self):
 		return (f"\n"
-				f"============================================================\n"
-				f"Application Name:    {self.app_name}\n"
-				f"Version:             {self.VERSION}\n"
-				f"Log File Created:    {self._timestamp()}\n"
-				f"Log Levels:          [DEBUG | INFO | WARNING | ERROR]\n"
-				f"------------------------------------------------------------\n"
-				f"Hostname:            [Null]\n"
-				f"Operating System:    [{system()}, {version()}]\n"
-				f"HWID:                {self.hwid}\n"
-				f"------------------------------------------------------------\n"
-				f"Log Format:          [Timestamp] [Log Level] [Message]\n\n"
-				f"============================================================\n\n"
-				f"Log Start:\n")
+		        f"============================================================\n"
+		        f"Application Name:    {self.app_name}\n"
+		        f"Version:             {self.VERSION}\n"
+		        f"Log File Created:    {self._timestamp()}\n"
+		        f"Log Levels:          [DEBUG | INFO | WARNING | ERROR]\n"
+		        f"------------------------------------------------------------\n"
+		        f"Hostname:            [Null]\n"
+		        f"Operating System:    [{system()}, {version()}]\n"
+		        f"HWID:                {self.hwid}\n"
+		        f"------------------------------------------------------------\n"
+		        f"Log Format:          [Timestamp] [Log Level] [Message]\n\n"
+		        f"============================================================\n\n"
+		        f"Log Start:\n")
 
 	def load_public_key(self, key: str):
 		self.key = RSA.import_key(key)
@@ -506,7 +507,7 @@ def generate_filename(method, url, params=None, data=None):
 
 	# Replace special characters in folder names
 	safe_path = endpoint_path.replace("/", "_").replace(":", "_").replace("?",
-																		  "_")  # Convert "stats/player" to "stats_player"
+	                                                                      "_")  # Convert "stats/player" to "stats_player"
 
 	# Hash request details to ensure unique filenames
 	hash_input = f"{method}_{url}_{dumps(params, sort_keys=True)}_{dumps(data, sort_keys=True)}"
@@ -540,7 +541,7 @@ def handle_rate_limit(response, url, method="GET", headers=None, params=None, da
 		time.sleep(wait_time)
 		# Reuse a shared session with timeout
 		return SESSION.request(method, url, params=params, json=json or data, headers=headers, verify=verify,
-							   timeout=REQUEST_TIMEOUT)
+		                       timeout=REQUEST_TIMEOUT)
 
 	return response  # No rate limit header, fallback to exponential backoff
 
@@ -573,7 +574,7 @@ def api_request(method, url, params=None, data=None, headers=None, json=None, ve
 		data = json
 	# Reuse shared session with connection pooling and timeouts
 	response = SESSION.request(method, url, params=params, json=data, headers=headers, verify=verify,
-							   timeout=REQUEST_TIMEOUT)
+	                           timeout=REQUEST_TIMEOUT)
 
 	if response.status_code == 200:
 		if SAVE_DATA:
@@ -863,27 +864,27 @@ class ValorantShopChecker:
 						# If Weapon Skin
 						if item_type_uuid == "e7c63390-eda7-46e0-bb7a-a6abdacd2433":
 							item_data = api_request("GET",
-													f"https://valorant-api.com/v1/weapons/skinlevels/{item_uuid}").json()
+							                        f"https://valorant-api.com/v1/weapons/skinlevels/{item_uuid}").json()
 							is_skin = True
 						# If Buddy
 						elif item_type_uuid == "dd3bf334-87f3-40bd-b043-682a57a8dc3a":
 							item_data = api_request("GET",
-													f"https://valorant-api.com/v1/buddies/levels/{item_uuid}").json()
+							                        f"https://valorant-api.com/v1/buddies/levels/{item_uuid}").json()
 						# If Spray
 						elif item_type_uuid == "d5f120f8-ff8c-4aac-92ea-f2b5acbe9475":
 							item_data = api_request("GET", f"https://valorant-api.com/v1/sprays/{item_uuid}").json()
 						# If Player Card
 						elif item_type_uuid == "3f296c07-64c3-494c-923b-fe692a4fa1bd":
 							item_data = api_request("GET",
-													f"https://valorant-api.com/v1/playercards/{item_uuid}").json()
+							                        f"https://valorant-api.com/v1/playercards/{item_uuid}").json()
 						# If Player Title
 						elif item_type_uuid == "de7caa6b-adf7-4588-bbd1-143831e786c6":
 							item_data = api_request("GET",
-													f"https://valorant-api.com/v1/playertitles/{item_uuid}").json()
+							                        f"https://valorant-api.com/v1/playertitles/{item_uuid}").json()
 						else:
 							item_data = {"data": {"displayName": "null",
-												  "displayIcon": "https://img.icons8.com/liquid-glass/48/no-image.png"}}  # FIXME | Replace with an image not null
-						#console.print(item_data)
+							                      "displayIcon": "https://img.icons8.com/liquid-glass/48/no-image.png"}}  # FIXME | Replace with an image not null
+						# console.print(item_data)
 						if item_data.get("status", 404) == 200 and item_data.get("data"):
 							item_name: str = item_data["data"]["displayName"]
 							try:
@@ -901,7 +902,7 @@ class ValorantShopChecker:
 									tier_uuid = data.get("contentTierUuid", "")
 									if tier_uuid:
 										tier_response = api_request("GET",
-																	f"https://valorant-api.com/v1/contenttiers/{tier_uuid}")
+										                            f"https://valorant-api.com/v1/contenttiers/{tier_uuid}")
 										tier_data = tier_response.json().get("data", {})
 										skin_rarity = [
 											tier_data.get("devName", ""),
@@ -1084,7 +1085,7 @@ class ValorantShopChecker:
 				c = c[1:]
 			if len(c) >= 6:
 				try:
-					return tuple(int(c[i:i+2], 16) for i in (0, 2, 4))
+					return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
 				except Exception:
 					return (255, 255, 255)
 			return (255, 255, 255)
@@ -1172,11 +1173,12 @@ class ValorantShopChecker:
 				style.configure("Title.TLabel", font=TITLE_FONT, foreground=TEXT_LIGHT, background=DARK_BG)
 				style.configure("TLabelframe", background=DARK_BG, borderwidth=0)
 				style.configure("TLabelframe.Label", background=DARK_BG, foreground=TEXT_LIGHT, font=HEADER_FONT)
-				style.configure("TButton", background=DARK_CARD_BG, foreground=TEXT_LIGHT, font=BUTTON_FONT, padding=[12,6])
+				style.configure("TButton", background=DARK_CARD_BG, foreground=TEXT_LIGHT, font=BUTTON_FONT,
+				                padding=[12, 6])
 				style.configure("Timer.TLabel", foreground="#CCCCCC", background=DARK_BG, font=TIMER_FONT)
 				style.configure("TNotebook", background=DARK_BG, borderwidth=0)
 				style.configure("TNotebook.Tab", background=DARK_CARD_BG, foreground="#CCCCCC", borderwidth=0,
-								padding=[10, 5])
+				                padding=[10, 5])
 				style.map("TNotebook.Tab", background=[("selected", "#444444")], foreground=[("selected", TEXT_LIGHT)])
 
 
@@ -1188,11 +1190,12 @@ class ValorantShopChecker:
 				style.configure("Title.TLabel", font=TITLE_FONT, foreground=TEXT_DARK, background=LIGHT_BG)
 				style.configure("TLabelframe", background=LIGHT_BG, borderwidth=0)
 				style.configure("TLabelframe.Label", background=LIGHT_BG, foreground=TEXT_DARK, font=HEADER_FONT)
-				style.configure("TButton", background="#e0e0e0", foreground=TEXT_DARK, font=BUTTON_FONT, padding=[12,6])
+				style.configure("TButton", background="#e0e0e0", foreground=TEXT_DARK, font=BUTTON_FONT,
+				                padding=[12, 6])
 				style.configure("Timer.TLabel", foreground="#333", background=LIGHT_BG, font=TIMER_FONT)
 				style.configure("TNotebook", background=LIGHT_BG, borderwidth=0)
 				style.configure("TNotebook.Tab", background="#e0e0e0", foreground=TEXT_DARK, borderwidth=0,
-								padding=[10, 5])
+				                padding=[10, 5])
 				style.map("TNotebook.Tab", background=[("selected", "#d0d0d0")], foreground=[("selected", "#000000")])
 
 			# Update all card backgrounds and child widget colors
@@ -1266,9 +1269,10 @@ class ValorantShopChecker:
 					raise Exception("No image")
 			except Exception as e:
 				console.print(f"Icon load error: {e}")
-				tkinter.Label(inner, text="?", width=2, bg=badge_bg, fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(side="left")
+				tkinter.Label(inner, text="?", width=2, bg=badge_bg,
+				              fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(side="left")
 			amount_lbl = tkinter.Label(inner, text=fmt_num(amount), font=("Segoe UI", 12, "bold"),
-									 fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK, bg=badge_bg)
+			                           fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK, bg=badge_bg)
 			amount_lbl.pack(side="left")
 			ToolTip(badge, text=f"{label_text}: {fmt_num(amount)}")
 			return badge
@@ -1330,9 +1334,9 @@ class ValorantShopChecker:
 				details_frame.pack(side="left", fill="x", expand=True)
 
 				tkinter.Label(details_frame, text=item_name, font=("Helvetica", 12, "bold"),
-							  bg=card_bg, fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
+				              bg=card_bg, fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
 				tkinter.Label(details_frame, text=f"Cost: {item_cost} VP", font=("Helvetica", 10),
-							  bg=card_bg, fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
+				              bg=card_bg, fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
 
 				if item_rarity and len(item_rarity) >= 3:
 					rarity_name, highlight_color, display_icon_url = item_rarity
@@ -1351,13 +1355,13 @@ class ValorantShopChecker:
 					except Exception as e:
 						console.print("Error loading rarity icon in popup:", e)
 					tkinter.Label(rarity_frame, text=rarity_name, font=("Helvetica", 8, "bold"),
-								  bg=highlight_color, fg="white").pack(side="left", padx=(0, 2))
+					              bg=highlight_color, fg="white").pack(side="left", padx=(0, 2))
 
 		# -------------------- ITEM CARD CREATION FUNCTION --------------------
 		def create_item_card(parent, image_url, title, price, img_width, img_height,
-							 card_bg, text_fg, rarity=None,
-							 compare_prices=False, is_bundle=False, bundle_uuid=None, bundle_name=None,
-							 video_url=None):
+		                     card_bg, text_fg, rarity=None,
+		                     compare_prices=False, is_bundle=False, bundle_uuid=None, bundle_name=None,
+		                     video_url=None):
 			if is_bundle:
 				card_frame = tkinter.Frame(parent, bg=card_bg, bd=0)
 				card_frame.configure(highlightthickness=1, highlightbackground="#CCCCCC", padx=10, pady=10)
@@ -1372,7 +1376,7 @@ class ValorantShopChecker:
 				badge_frame = tkinter.Frame(card_frame, bg=card_bg)
 				badge_frame.pack(anchor="nw", padx=5, pady=5)
 				badge = tkinter.Label(badge_frame, text="BUNDLE", bg=ACCENT_COLOR, fg=TEXT_DARK,
-									  font=("Helvetica", 8, "bold"))
+				                      font=("Helvetica", 8, "bold"))
 				badge.pack()
 
 			if rarity:
@@ -1392,7 +1396,7 @@ class ValorantShopChecker:
 				except Exception as e:
 					console.print("Error loading rarity icon:", e)
 				tkinter.Label(rarity_frame, text=rarity_name, bg=highlight_color, fg="white",
-							  font=("Helvetica", 8, "bold")).pack(side="left")
+				              font=("Helvetica", 8, "bold")).pack(side="left")
 
 			try:
 				item_image = load_image(image_url)
@@ -1418,19 +1422,19 @@ class ValorantShopChecker:
 				price_frame = tkinter.Frame(card_frame, bg=card_bg)
 				price_frame.pack(pady=(5, 10))
 				tkinter.Label(price_frame, text=f"{fmt_num(base_price)} VP", font=("Segoe UI", 10, "overstrike"),
-							  fg="#E06B74", bg=card_bg).pack(side="left", padx=(0, 6))
+				              fg="#E06B74", bg=card_bg).pack(side="left", padx=(0, 6))
 				tkinter.Label(price_frame, text=f"{fmt_num(discount_price)} VP", font=("Segoe UI", 12, "bold"),
-							  fg=text_fg, bg=card_bg).pack(side="left")
+				              fg=text_fg, bg=card_bg).pack(side="left")
 				try:
 					if base_price and discount_price and base_price > discount_price:
 						pct = int(round((base_price - discount_price) / float(base_price) * 100))
 						tkinter.Label(price_frame, text=f" -{pct}%", font=("Segoe UI", 10, "bold"),
-									  fg=ACCENT_COLOR, bg=card_bg).pack(side="left", padx=(6,0))
+						              fg=ACCENT_COLOR, bg=card_bg).pack(side="left", padx=(6, 0))
 				except Exception:
 					pass
 			else:
 				tkinter.Label(card_frame, text=f"Price: {fmt_num(price)} VP", font=("Segoe UI", 10),
-							  fg=text_fg, bg=card_bg).pack(pady=(5, 10))
+				              fg=text_fg, bg=card_bg).pack(pady=(5, 10))
 
 			# Tooltip
 			ToolTip(card_frame, text=f"{title}\nPrice: {fmt_num((price[1] if compare_prices else price))} VP")
@@ -1447,18 +1451,18 @@ class ValorantShopChecker:
 
 		# -------------------- SECTION CREATION FUNCTION --------------------
 		def create_section(parent_frame, title, items, images, prices, duration,
-						   img_width, img_height, rarities=None, is_bundle: bool = False,
-						   compare_prices: bool = False, videos=None):
+		                   img_width, img_height, rarities=None, is_bundle: bool = False,
+		                   compare_prices: bool = False, videos=None):
 			section_frame = ttk.Labelframe(parent_frame, text=title)
 			section_frame.pack(pady=10, padx=10, anchor="center", fill="x")
 
 			timer_frame = ttk.Frame(section_frame)
 			timer_frame.pack(fill="x", padx=10, pady=5)
 			timer_label = tkinter.Label(timer_frame, text=f"Expires in: {format_duration(duration)}",
-									 bg=DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG,
-									 fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK,
-									 font=TIMER_FONT)
-			timer_label.pack(side="left", padx=(0,8), pady=2)
+			                            bg=DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG,
+			                            fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK,
+			                            font=TIMER_FONT)
+			timer_label.pack(side="left", padx=(0, 8), pady=2)
 
 			items_frame = ttk.Frame(section_frame)
 			items_frame.pack(padx=10, pady=10, fill="both", expand=True)
@@ -1581,7 +1585,7 @@ class ValorantShopChecker:
 		from datetime import datetime
 		stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 		status_lbl = tkinter.Label(status, text=f"Last updated: {stamp}", bg=status_bg,
-								  fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK, font=("Segoe UI", 9))
+		                           fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK, font=("Segoe UI", 9))
 		status_lbl.pack(side="right", padx=12, pady=6)
 
 		# -------------------- Timers Update Loop --------------------
@@ -3175,7 +3179,7 @@ class ValorantPerformanceScorer:
 
 		if subject not in self.players_by_subject:
 			return 0.0, {"error": f"subject {subject} not found"} if explain else (0.0,
-																				   None)  # type: ignore[return-value]
+			                                                                       None)  # type: ignore[return-value]
 
 		# Component scores
 		s_kd, kd_info = self._comp_kd(subject)
@@ -3298,7 +3302,7 @@ class ValorantPerformanceScorer:
 		c = self.smoothing.get("econ", 0.5)
 		score = self._logistic_from_pair(wk, wd, c)
 		return score, {"weighted_kills": wk, "weighted_deaths": wd, "amp": self.econ_weight_amp,
-					   "scale": self.econ_adv_scale}
+		               "scale": self.econ_adv_scale}
 
 	def _comp_objective(self, subject: str) -> Tuple[float, Dict[str, Any]]:
 		my_obj = self.objectives.get(subject, 0.0)
@@ -3349,6 +3353,7 @@ def calculate_kd(kills: int, deaths: int) -> float | int:
 	if deaths == 0:
 		return kills  # Stop div of zero
 	return round(kills / deaths, 2)
+
 
 class ConfigValidationError(ValueError):
 	"""Raised when a configuration value cannot be parsed or validated."""
@@ -3566,7 +3571,7 @@ class ConfigManager:
 
 
 def build_main_config_manager(
-	path: Path | str, game_modes: Mapping[str, str]
+		path: Path | str, game_modes: Mapping[str, str]
 ) -> ConfigManager:
 	pretty_modes = [f"{code} ({name})" for code, name in sorted(game_modes.items())]
 	valid_mode_list = ["ALL", "SAME"] + sorted(game_modes.keys())
@@ -3795,10 +3800,11 @@ def run_setup_wizard(
 CONFIG_MANAGER: Optional[ConfigManager] = None
 CONFIG: Optional[configparser.ConfigParser] = None
 
+
 @lru_cache(maxsize=128)
 def get_userdata_from_id(user_id: str, host_player_uuid: str | None = None) -> tuple[str, bool]:
 	req = api_request("PUT", f"https://pd.na.a.pvp.net/name-service/v2/players", headers=internal_api_headers,
-					  data=[user_id])
+	                  data=[user_id])
 	if req.status_code == 200:
 		user_info = req.json()[0]
 		user_name = f"{user_info['GameName']}#{user_info['TagLine']}"
@@ -3849,7 +3855,7 @@ def get_all_agents_by_role() -> Dict[str, List[str]]:
 	Fetch all playable agents once and bucket them by role.
 	"""
 	result: Dict[str, List[str]] = {"Controller": [], "Duelist": [],
-									"Initiator": [], "Sentinel": []}
+	                                "Initiator": [], "Sentinel": []}
 	try:
 		r = api_request("GET", "https://valorant-api.com/v1/agents?isPlayableCharacter=true")
 		for ag in r.json().get("data", []):
@@ -3881,6 +3887,7 @@ _AGENT_UTILITY_TAG: Dict[str, str] = {
 	"Harbor": "Smoke",
 	"Clove": "Smoke"
 }
+
 
 def categorize_agent_utility(agent_name: str) -> str:
 	return _AGENT_UTILITY_TAG.get(agent_name, "Other")
@@ -4048,15 +4055,15 @@ def get_rank_from_uuid(user_id: str, platform: str = "PC"):
 
 	if platform == "PC":
 		r = api_request("GET", f"https://pd.na.a.pvp.net/mmr/v1/players/{user_id}/competitiveupdates?queue=competitive",
-						headers=internal_api_headers)
+		                headers=internal_api_headers)
 		try:
 			rank_tier = int(r.json()["Matches"][0]["TierAfterUpdate"])
 		except:
 			return "Unranked"
 	elif platform == "CONSOLE":
 		r = api_request("GET",
-						f"https://pd.na.a.pvp.net/mmr/v1/players/{user_id}/competitiveupdates?queue=console_competitive",
-						headers=internal_api_headers_console)
+		                f"https://pd.na.a.pvp.net/mmr/v1/players/{user_id}/competitiveupdates?queue=console_competitive",
+		                headers=internal_api_headers_console)
 		try:
 			rank_tier = int(r.json()["Matches"][0]["TierAfterUpdate"])
 		except:
@@ -4286,6 +4293,7 @@ def get_player_data_from_uuid(user_id: str, cache: dict | None, platform: str = 
 			metadata={"reason": "exception", "player_id": user_id},
 		)
 
+
 def get_rank_color(rank: str, use_rich_markup: bool = False):
 	"""Return colored text for a rank, with Radiant being multicolored."""
 	if not use_rich_markup:
@@ -4299,7 +4307,8 @@ def get_rank_color(rank: str, use_rich_markup: bool = False):
 			"Diamond": "\033[35m",  # Magenta
 			"Ascendant": "\033[38;5;82m",  # Bright Green
 			"Immortal": f"\033[31m",  # Red
-			"Radiant": "\033[38;5;196mR\033[38;5;202ma\033[38;5;226md\033[38;5;82mi\033[36ma\033[38;5;33mn\033[38;5;201mt"  # Rainbow (Multi-Colored)
+			"Radiant": "\033[38;5;196mR\033[38;5;202ma\033[38;5;226md\033[38;5;82mi\033[36ma\033[38;5;33mn\033[38;5;201mt"
+			# Rainbow (Multi-Colored)
 		}
 
 		RESET = "\033[0m"  # Reset color to default
@@ -4365,8 +4374,8 @@ def get_user_current_state(puuid: str, presences_data: dict = None) -> int:
 	try:
 		if presences_data is None:
 			with api_request("GET", f"https://127.0.0.1:{port}/chat/v4/presences",
-							 headers={"authorization": f"Basic {password}", "accept": "*/*",
-									  "Host": f"127.0.0.1:{port}"}, verify=False) as r:
+			                 headers={"authorization": f"Basic {password}", "accept": "*/*",
+			                          "Host": f"127.0.0.1:{port}"}, verify=False) as r:
 				data = r.json()
 		else:
 			data = presences_data
@@ -4376,7 +4385,7 @@ def get_user_current_state(puuid: str, presences_data: dict = None) -> int:
 			if user["puuid"] == puuid:
 				# Check if the player is playing Valorant. If not, return 0
 				if str(user["product"]).lower() != "valorant":
-					#console.print(f"State: {0}")
+					# console.print(f"State: {0}")
 					return 0
 
 				encoded_user_data: str = user["private"]
@@ -4415,8 +4424,8 @@ def get_current_game_score(puuid: str) -> tuple[int, int]:
 
 	try:
 		data = api_request("GET", f"https://127.0.0.1:{port}/chat/v4/presences",
-						   headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"},
-						   verify=False).json()
+		                   headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"},
+		                   verify=False).json()
 
 		all_user_data = data["presences"]
 		for user in all_user_data:
@@ -4430,7 +4439,7 @@ def get_current_game_score(puuid: str) -> tuple[int, int]:
 		traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 		logger.log(1, traceback_str)
 	logger.log(1,
-			   f"Returning -1, -1 for current game score!\nData PUUID: {puuid}\n All_User_Data: {all_user_data}\nDecoded_User_Data: {decoded_user_data}")
+	           f"Returning -1, -1 for current game score!\nData PUUID: {puuid}\n All_User_Data: {all_user_data}\nDecoded_User_Data: {decoded_user_data}")
 	return -1, -1
 
 
@@ -4485,7 +4494,7 @@ async def match_report(match_id: str):
 	# Poll every 5 seconds until match data is available.
 	while True:
 		response = api_request("GET", f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}",
-							   headers=internal_api_headers)
+		                       headers=internal_api_headers)
 		poll_attempts += 1
 		if response.status_code == 200:
 			match_data = response.json()
@@ -4562,7 +4571,7 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 	while True:
 		try:
 			r = api_request("GET", f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}",
-							headers=internal_api_headers)
+			                headers=internal_api_headers)
 			if r.status_code == 200:
 				match_id = r.json()["MatchID"]
 				break
@@ -4614,10 +4623,10 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 		try:
 			# Get match data
 			with api_request("GET", f"https://glz-na-1.na.a.pvp.net/core-game/v1/matches/{match_id}",
-							 headers=internal_api_headers) as r:
+			                 headers=internal_api_headers) as r:
 				if r.status_code == 400:
 					logger.log(2,
-							   f"Login may have expired! Re-logging in.\n Tried to get in-game match data. MATCH_ID -> {match_id}")
+					           f"Login may have expired! Re-logging in.\n Tried to get in-game match data. MATCH_ID -> {match_id}")
 					await log_in()
 				elif r.status_code == 404:
 					return None
@@ -4711,7 +4720,7 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 				for player in match_data["Players"]:
 					player_id = player["PlayerIdentity"]["Subject"]
 					player_data[str(player_name_cache[count])] = cache.get(str(player_id),
-																		   ("Loading", "-", "Loading", "-"))
+					                                                       ("Loading", "-", "Loading", "-"))
 					count += 1
 
 				def format_kd_value(value: Any) -> str:
@@ -4893,7 +4902,7 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 				scoreboard_lines = []
 				try:
 					with api_request("GET", f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}",
-									 headers=internal_api_headers) as re_match_stats:
+					                 headers=internal_api_headers) as re_match_stats:
 						match_stats = re_match_stats.json()
 
 					total_rounds = match_stats["teams"][0]["roundsPlayed"]
@@ -5071,7 +5080,7 @@ async def run_pregame(data: dict):
 		try:
 			buffer = StringIO()
 			with api_request("GET", f"https://glz-na-1.na.a.pvp.net/pregame/v1/matches/{data['MatchID']}",
-							 headers=internal_api_headers) as r:
+			                 headers=internal_api_headers) as r:
 				match_data = r.json()
 				if DEBUG:
 					with open(f"{DATA_PATH}/pre_match_data.json", "w") as f:
@@ -5082,20 +5091,23 @@ async def run_pregame(data: dict):
 				mode_name = "null"
 
 				map_id = match_data["MapID"]
-				gamemode_name = match_data["ProvisioningFlow"]
-				if gamemode_name == "ShootingRange":
-					mode_name = "Shooting Range"
-				elif gamemode_name == "ReplayNewPlayerExperience":
-					mode_name = "Tutorial"
-				elif gamemode_name == "CustomGame":
-					mode_name = "Custom Game"
+				try:
+					gamemode_name = match_data["ProvisioningFlow"]
+					if gamemode_name == "ShootingRange":
+						mode_name = "Shooting Range"
+					elif gamemode_name == "ReplayNewPlayerExperience":
+						mode_name = "Tutorial"
+					elif gamemode_name == "CustomGame":
+						mode_name = "Custom Game"
+				except KeyError:
+					mode_name = str(match_data["QueueID"]).capitalize()
 				map_name = get_mapdata_from_id(map_id)
 				if map_name is None or map_name == "":
 					map_name = "The Range"
 				if config_main.get("use_discord_rich_presence", "").lower() == "true":
 					RPC.update(
 						state="In Agent Select",
-						details=f"{map_name} | {gamemode_name.capitalize()}",
+						details=f"{map_name} | {mode_name.capitalize()}",
 						start=int(time.time()),
 						party_size=[1, 5],
 					)
@@ -5136,23 +5148,23 @@ async def run_pregame(data: dict):
 						if config_main.get("use_discord_rich_presence", "").lower() == "true":
 							RPC.update(
 								state="In Agent Select",
-								details=f"{map_name} | {gamemode_name.capitalize()} | ({'H' if state.lower() == 'selected' else 'L'}) {agent_name.capitalize()}",
+								details=f"{map_name} | {mode_name.capitalize()} | ({'H' if state.lower() == 'selected' else 'L'}) {agent_name.capitalize()}",
 								party_size=[1, 5],
 							)
 				except Exception:
 					agent_name = "None"
 
 				if not got_rank:
-					if "console" in gamemode_name:
+					if "console" in mode_name.lower():
 						rank = get_rank_from_uuid(str(ally_player["PlayerIdentity"]["Subject"]), "CONSOLE")
 						rank_list[str(user_name)] = str(rank)
 						thread = threading.Thread(target=fetch_player_data,
-												  args=(ally_player["PlayerIdentity"]["Subject"], "CONSOLE"))
+						                          args=(ally_player["PlayerIdentity"]["Subject"], "CONSOLE"))
 					else:
 						rank = get_rank_from_uuid(str(ally_player["PlayerIdentity"]["Subject"]))
 						rank_list[str(user_name)] = str(rank)
 						thread = threading.Thread(target=fetch_player_data,
-												  args=(ally_player["PlayerIdentity"]["Subject"], "PC"))
+						                          args=(ally_player["PlayerIdentity"]["Subject"], "PC"))
 					threads.append(thread)
 					thread.start()
 
@@ -5191,7 +5203,7 @@ async def run_pregame(data: dict):
 				)
 
 				kd, wins, avg, score = cache.get(str(ally_player["PlayerIdentity"]["Subject"]),
-										  ("Loading", "-", "Loading", "-"))
+				                                 ("Loading", "-", "Loading", "-"))
 				buffer.write(f"[magenta]  Player KD: {kd} | Headshot: {avg}% | Score: {score}[/magenta]\n")
 				buffer.write(f"[bright_magenta]  Past Matches: {''.join(wins)}[/bright_magenta]\n\n")
 
@@ -5257,7 +5269,9 @@ async def run_pregame(data: dict):
 			await throttler.sleep()
 		except KeyboardInterrupt:
 			sys.exit(1)
-		except KeyError:
+		except KeyError as e:
+			logger.warning("Pregame KeyError",
+			               context={"error": "".join(traceback.format_exception(type(e), e, e.__traceback__))})
 			return
 		except Exception as e:
 			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
@@ -5289,7 +5303,7 @@ async def toggle_ready_state(party_id: str, is_ready: bool):
 		else:
 			console.print(f"Failed to toggle ready state")
 			logger.log(2,
-					   f"Failed to toggle ready state. Status Code: {response.status_code}, Response: {response.text}")
+			           f"Failed to toggle ready state. Status Code: {response.status_code}, Response: {response.text}")
 			return False
 	except Exception as e:
 		console.print(f"Failed to toggle ready state")
@@ -5302,19 +5316,19 @@ def quit_game():
 	player_state = get_user_current_state(val_uuid)
 	if player_state == 3:
 		with api_request("GET", f"https://glz-na-1.na.a.pvp.net/pregame/v1/players/{val_uuid}",
-						 headers=internal_api_headers) as r:
+		                 headers=internal_api_headers) as r:
 			if r.status_code == 200:
 				match_id = r.json()["MatchID"]
 				api_request("POST", f"https://glz-na-1.na.a.pvp.net/pregame/v1/matches/{match_id}/quit",
-							headers=internal_api_headers)
+				            headers=internal_api_headers)
 	elif player_state == 4:
 		with api_request("GET", f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}",
-						 headers=internal_api_headers) as r:
+		                 headers=internal_api_headers) as r:
 			if r.status_code == 200:
 				match_id = r.json()["MatchID"]
 				api_request("POST",
-							f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}/disassociate/{match_id}",
-							headers=internal_api_headers)
+				            f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}/disassociate/{match_id}",
+				            headers=internal_api_headers)
 
 
 async def listen_for_input(party_id: str):
@@ -5375,8 +5389,8 @@ async def get_friend_states() -> list[str]:
 	friend_list = []
 	try:
 		with api_request("GET", f"https://127.0.0.1:{port}/chat/v4/presences",
-						 headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"},
-						 verify=False) as r:
+		                 headers={"authorization": f"Basic {password}", "accept": "*/*", "Host": f"127.0.0.1:{port}"},
+		                 verify=False) as r:
 			data = r.json()
 		all_user_data = data["presences"]
 		for user in all_user_data:
@@ -5393,6 +5407,8 @@ async def get_friend_states() -> list[str]:
 					5: Replay
 					6: Unknown State
 					"""
+					if state == 0:
+						continue
 					state_str = "In Menu" if state == 1 else "Queueing" if state == 2 else "Pre-game" if state == 3 else "In-game" if state == 4 else "Replay" if state == 5 else "Unknown State" if state == 6 else "Unknown"
 					full_str = f"{user['game_name']}#{user['game_tag']}: {state_str}"
 					friend_list.append(full_str)
@@ -5412,6 +5428,8 @@ async def get_party(got_rank: dict = None):
 	got_rank = got_rank or {}
 	player_stats_cache = PLAYER_STATS_CACHE
 	prefetch_tasks: dict[str, asyncio.Task] = {}
+
+	party_size = 1
 
 	logger.log(3, "Loading Party... ")
 
@@ -5437,7 +5455,7 @@ async def get_party(got_rank: dict = None):
 					details="Valorant Match Tracker",
 					large_image="valorant",
 					large_text="Valorant Zoro",
-					party_size=[1, 5],
+					party_size=[party_size, 5],
 					start=int(time.time()),
 				)
 
@@ -5450,6 +5468,7 @@ async def get_party(got_rank: dict = None):
 
 			if party_id:
 				party_data = await fetch_party_data(party_id)
+				party_size = len(party_data["Members"])
 				for player_id, task in list(prefetch_tasks.items()):
 					if task.done():
 						await prefetch_tasks.pop(player_id, None)
@@ -5650,16 +5669,16 @@ async def get_party(got_rank: dict = None):
 async def fetch_party_id():
 	"""Fetch the party ID for the current user."""
 	with api_request("GET", f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(val_uuid)}",
-					 headers=internal_api_headers) as r:
+	                 headers=internal_api_headers) as r:
 		if r.status_code == 400:
 			is_console = str(r.json().get("errorCode")) == "PLAYER_PLATFORM_TYPE_MISMATCH"
 			if is_console:
 				with api_request("GET", f"https://glz-na-1.na.a.pvp.net/parties/v1/players/{str(val_uuid)}",
-								 headers=internal_api_headers_console) as r2:
+				                 headers=internal_api_headers_console) as r2:
 					return r2.json().get('CurrentPartyID')
 			else:
 				logger.log(1,
-						   f"Error fetching party details. Dumping Data:\n{r.json()}\nParameters: {str(val_uuid)}, {internal_api_headers}, {internal_api_headers_console}")
+				           f"Error fetching party details. Dumping Data:\n{r.json()}\nParameters: {str(val_uuid)}, {internal_api_headers}, {internal_api_headers_console}")
 				return None
 		elif r.status_code == 404:
 			return None
@@ -5726,7 +5745,7 @@ async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 		try:
 			# Try pregame
 			r = api_request("GET", f"https://glz-na-1.na.a.pvp.net/pregame/v1/players/{val_uuid}",
-							headers=internal_api_headers)
+			                headers=internal_api_headers)
 			if r.status_code != 404:
 				data = r.json()
 				if data["MatchID"]:
@@ -5748,7 +5767,7 @@ async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 		# Try playing in-game
 		try:
 			r = api_request("GET", f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}",
-							headers=internal_api_headers)
+			                headers=internal_api_headers)
 			return_code = r.status_code
 			if return_code == 200:
 				clear_console()
@@ -5770,7 +5789,7 @@ async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 
 def get_userdata_from_token() -> tuple[str, str]:
 	r = api_request("GET", "https://auth.riotgames.com/userinfo",
-					headers={"Authorization": f"Bearer {val_access_token}"})
+	                headers={"Authorization": f"Bearer {val_access_token}"})
 	try:
 		account_name = r.json()["acct"]["game_name"]
 		account_tag = r.json()["acct"]["tag_line"]
@@ -6069,9 +6088,9 @@ if __name__ == "__main__":
 	parser.add_argument("--version", action="store_true", help="Show version and exit")
 	parser.add_argument("--offline", action="store_true", help="Run without Riot client using offline fixtures")
 	parser.add_argument("--offline-state",
-		choices=["menus", "party", "pregame", "ingame", "postgame"],
-		default="menus",
-		                help="Offline scenario to simulate (requires --offline)")
+	                    choices=["menus", "party", "pregame", "ingame", "postgame"],
+	                    default="menus",
+	                    help="Offline scenario to simulate (requires --offline)")
 	parser.add_argument("--setup",
 	                    action="store_true",
 	                    help="Open the interactive setup wizard before starting the client")
@@ -6093,7 +6112,6 @@ if __name__ == "__main__":
 	if args.no_console:
 		# Hide the actual console window; can be restored from system tray
 		hide_console()
-
 
 	CLI_DEBUG_OVERRIDE = args.debug
 	setup_invoked = False
