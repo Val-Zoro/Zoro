@@ -1,6 +1,6 @@
 nest-asyncio==1.6.0
 colorama==0.4.6
-Pillow~=11.3.0
+Pillow~=12.0.0
 Requests==2.32.4
 rich==13.7.1
 urllib3==2.5.0
