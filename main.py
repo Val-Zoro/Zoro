@@ -5091,13 +5091,16 @@ async def run_pregame(data: dict):
 				mode_name = "null"
 
 				map_id = match_data["MapID"]
-				gamemode_name = match_data["ProvisioningFlow"]
-				if gamemode_name == "ShootingRange":
-					mode_name = "Shooting Range"
-				elif gamemode_name == "ReplayNewPlayerExperience":
-					mode_name = "Tutorial"
-				elif gamemode_name == "CustomGame":
-					mode_name = "Custom Game"
+				try:
+					gamemode_name = match_data["ProvisioningFlow"]
+					if gamemode_name == "ShootingRange":
+						mode_name = "Shooting Range"
+					elif gamemode_name == "ReplayNewPlayerExperience":
+						mode_name = "Tutorial"
+					elif gamemode_name == "CustomGame":
+						mode_name = "Custom Game"
+				except KeyError:
+					mode_name = str(match_data["QueueID"]).capitalize()
 				map_name = get_mapdata_from_id(map_id)
 				if map_name is None or map_name == "":
 					map_name = "The Range"
@@ -5266,7 +5269,9 @@ async def run_pregame(data: dict):
 			await throttler.sleep()
 		except KeyboardInterrupt:
 			sys.exit(1)
-		except KeyError:
+		except KeyError as e:
+			logger.warning("Pregame KeyError",
+			               context={"error": "".join(traceback.format_exception(type(e), e, e.__traceback__))})
 			return
 		except Exception as e:
 			traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
@@ -5402,6 +5407,8 @@ async def get_friend_states() -> list[str]:
 					5: Replay
 					6: Unknown State
 					"""
+					if state == 0:
+						continue
 					state_str = "In Menu" if state == 1 else "Queueing" if state == 2 else "Pre-game" if state == 3 else "In-game" if state == 4 else "Replay" if state == 5 else "Unknown State" if state == 6 else "Unknown"
 					full_str = f"{user['game_name']}#{user['game_tag']}: {state_str}"
 					friend_list.append(full_str)
@@ -5421,6 +5428,8 @@ async def get_party(got_rank: dict = None):
 	got_rank = got_rank or {}
 	player_stats_cache = PLAYER_STATS_CACHE
 	prefetch_tasks: dict[str, asyncio.Task] = {}
+
+	party_size = 1
 
 	logger.log(3, "Loading Party... ")
 
@@ -5446,7 +5455,7 @@ async def get_party(got_rank: dict = None):
 					details="Valorant Match Tracker",
 					large_image="valorant",
 					large_text="Valorant Zoro",
-					party_size=[1, 5],
+					party_size=[party_size, 5],
 					start=int(time.time()),
 				)
 
@@ -5459,6 +5468,7 @@ async def get_party(got_rank: dict = None):
 
 			if party_id:
 				party_data = await fetch_party_data(party_id)
+				party_size = len(party_data["Members"])
 				for player_id, task in list(prefetch_tasks.items()):
 					if task.done():
 						await prefetch_tasks.pop(player_id, None)

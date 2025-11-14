@@ -51,6 +51,14 @@ def format_digest(algorithm: str, value: str) -> str:
 	return f"{algorithm.lower()}:{value.lower()}"
 
 
+def digests_equal(first: Optional[str], second: Optional[str]) -> bool:
+	if not first or not second:
+		return False
+	algo_a, value_a = parse_digest_parts(first)
+	algo_b, value_b = parse_digest_parts(second)
+	return algo_a == algo_b and value_a == value_b
+
+
 def compute_file_digest(file_path: Path, algorithm: str = "sha256") -> str:
 	try:
 		hasher = hashlib.new(algorithm)
@@ -440,13 +448,36 @@ def ensure_installation(
 	if release_data is None:
 		raise LauncherError("No suitable release was found on GitHub")
 
+	asset = select_release_asset(release_data, EXE_PATTERN)
+	if asset is None:
+		raise LauncherError("Release does not expose a downloadable executable named Zoro*.exe.")
+
 	remote_version = release_data.get("tag_name") or release_data.get("name") or "latest"
 	local_version = read_local_version(install_dir)
+	metadata = ensure_install_metadata_exists(install_dir, local_version)
+	installed_digest = metadata.get("digest") if metadata else None
+	payload_exists = has_existing_payload(install_dir)
 
-	needs_install = force_install or local_version is None or not has_existing_payload(install_dir)
+	needs_install = force_install or local_version is None or not payload_exists
+	remote_digest = asset.get("digest")
+	if (
+			not needs_install
+			and remote_digest
+			and installed_digest
+			and not digests_equal(remote_digest, installed_digest)
+	):
+		print(
+			"[launcher] Remote release hash differs from installed build; reinstalling to ensure integrity."
+		)
+		needs_install = True
+	elif not needs_install and remote_digest and not installed_digest:
+		print(
+			"[launcher] Installed build lacks checksum metadata; reinstalling to capture official digest."
+		)
+		needs_install = True
+
 	if not needs_install and version_key(remote_version) <= version_key(local_version):
 		print(f"[launcher] Local version {local_version} is up to date.")
-		ensure_install_metadata_exists(install_dir, local_version or remote_version)
 		return local_version, remote_version
 
 	if not needs_install:
@@ -466,9 +497,6 @@ def ensure_installation(
 	asset_digest: Optional[str] = None
 	with tempfile.TemporaryDirectory(prefix="zoro-launcher-download-") as temp_dir_str:
 		temp_dir = Path(temp_dir_str)
-		asset = select_release_asset(release_data, EXE_PATTERN)
-		if asset is None:
-			raise LauncherError("Release does not expose a downloadable executable named Zoro*.exe.")
 		asset_path = download_release_asset(asset, temp_dir)
 		asset_digest = ensure_checksum(asset_path, asset.get("digest"))
 		try:
