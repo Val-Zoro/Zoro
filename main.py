@@ -5107,7 +5107,7 @@ async def run_pregame(data: dict):
 				if config_main.get("use_discord_rich_presence", "").lower() == "true":
 					RPC.update(
 						state="In Agent Select",
-						details=f"{map_name} | {gamemode_name.capitalize()}",
+						details=f"{map_name} | {mode_name.capitalize()}",
 						start=int(time.time()),
 						party_size=[1, 5],
 					)
@@ -5148,14 +5148,14 @@ async def run_pregame(data: dict):
 						if config_main.get("use_discord_rich_presence", "").lower() == "true":
 							RPC.update(
 								state="In Agent Select",
-								details=f"{map_name} | {gamemode_name.capitalize()} | ({'H' if state.lower() == 'selected' else 'L'}) {agent_name.capitalize()}",
+								details=f"{map_name} | {mode_name.capitalize()} | ({'H' if state.lower() == 'selected' else 'L'}) {agent_name.capitalize()}",
 								party_size=[1, 5],
 							)
 				except Exception:
 					agent_name = "None"
 
 				if not got_rank:
-					if "console" in gamemode_name:
+					if "console" in mode_name.lower():
 						rank = get_rank_from_uuid(str(ally_player["PlayerIdentity"]["Subject"]), "CONSOLE")
 						rank_list[str(user_name)] = str(rank)
 						thread = threading.Thread(target=fetch_player_data,
