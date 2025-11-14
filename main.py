@@ -4390,6 +4390,8 @@ def get_user_current_state(puuid: str, presences_data: dict = None) -> int:
 						return 2
 					elif party_state == "MATCHMADE_GAME_STARTING":
 						return 3
+					else:
+						return -1
 				elif state == "PREGAME":
 					return 3
 				elif state == "INGAME":
@@ -4637,15 +4639,17 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 				try:
 					gamemode_name = str(match_data["MatchmakingData"]["QueueID"]).capitalize()
 					mode_name = GAME_MODES.get(gamemode_name.lower(), gamemode_name)
-					is_solo = False
 				except TypeError:
 					gamemode_name = match_data["ProvisioningFlow"]
 					if gamemode_name == "ShootingRange":
-						gamemode_name = "Shooting Range"
-					if gamemode_name == "ReplayNewPlayerExperience":
-						gamemode_name = "Tutorial"
-					is_solo = True
-				map_name = get_mapdata_from_id(map_id) if not is_solo else "The Range"
+						mode_name = "Shooting Range"
+					elif gamemode_name == "ReplayNewPlayerExperience":
+						mode_name = "Tutorial"
+					elif gamemode_name == "CustomGame":
+						mode_name = "Custom Game"
+				map_name = get_mapdata_from_id(map_id)
+				if map_name is None or map_name == "":
+					map_name = "The Range"
 
 				if config_main.get("use_discord_rich_presence", "").lower() == "true":
 					RPC.update(
@@ -5074,8 +5078,20 @@ async def run_pregame(data: dict):
 						dump(match_data, f, indent=4)
 
 			if not got_map_and_gamemode:
-				map_name = get_mapdata_from_id(match_data["MapID"])
-				gamemode_name = match_data["QueueID"]
+				map_name = "null"
+				mode_name = "null"
+
+				map_id = match_data["MapID"]
+				gamemode_name = match_data["ProvisioningFlow"]
+				if gamemode_name == "ShootingRange":
+					mode_name = "Shooting Range"
+				elif gamemode_name == "ReplayNewPlayerExperience":
+					mode_name = "Tutorial"
+				elif gamemode_name == "CustomGame":
+					mode_name = "Custom Game"
+				map_name = get_mapdata_from_id(map_id)
+				if map_name is None or map_name == "":
+					map_name = "The Range"
 				if config_main.get("use_discord_rich_presence", "").lower() == "true":
 					RPC.update(
 						state="In Agent Select",
@@ -5088,7 +5104,7 @@ async def run_pregame(data: dict):
 
 			buffer.write(f"[bright_white]{'=' * 30}[/bright_white]\n")
 			buffer.write(f"[green]Map: {map_name}[/green]\n")
-			buffer.write(f"[cyan]Game Mode: {str(gamemode_name).capitalize()}[/cyan]\n")
+			buffer.write(f"[cyan]Game Mode: {str(mode_name).capitalize()}[/cyan]\n")
 			buffer.write(f"[bright_white]{'=' * 30}\n\n[/bright_white]")
 
 			# our_team_colour = match_data["AllyTeam"]["TeamID"]
@@ -5848,7 +5864,7 @@ async def display_logged_in_status(name: str) -> None:
 	"""Display the logged-in status with a welcome message."""
 	console.clear()
 	main_display()
-	console.print(f"\n[bold green]You have been logged in! Welcome, {name.capitalize()}[/bold green]")
+	console.print(f"\n[bold green]You have been logged in! Welcome, {name}[/bold green]")
 
 
 async def display_friend_states(friend_states: list) -> None:
@@ -6084,7 +6100,7 @@ if __name__ == "__main__":
 	offline_mode_enabled = False
 	offline_mode_exception: Optional[Exception] = None
 
-	# Activate offline mode early so subsequent calls (including config and API fetches) can be stubbed
+	# Activate offline mode early so later calls (including config and API fetches) can be stubbed
 	if args.offline:
 		try:
 			from devtools.offline.integration import activate_offline_mode
@@ -6110,6 +6126,7 @@ if __name__ == "__main__":
 
 	if args.setup or not SETUP_COMPLETED:
 		try:
+			clear_console()
 			run_setup_wizard(config_manager, config, game_modes=GAME_MODES)
 			setup_invoked = True
 		except RuntimeError as exc:
