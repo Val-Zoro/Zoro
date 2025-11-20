@@ -1,7 +1,8 @@
-VERSION = "v2.5.1"
+VERSION = "v2.5.2"
 
 import argparse
 import asyncio
+import atexit
 import configparser
 import hashlib
 import os
@@ -21,7 +22,7 @@ from json import dump, dumps, loads, load
 from math import tanh
 from pathlib import Path
 from platform import system, version
-from tkinter import ttk, messagebox
+from tempfile import gettempdir
 from typing import Any, Dict, Optional, Tuple, List, Callable, Mapping, Sequence, Iterable
 
 import colorama
@@ -31,15 +32,15 @@ from Crypto.Cipher import PKCS1_OAEP, AES
 from Crypto.PublicKey import RSA
 from Crypto.Random import get_random_bytes
 from Crypto.Util.Padding import pad
-from PIL import Image, ImageTk
+from PIL import Image
 from colorama import Fore, Style
 from pypresence import Presence
 from requests import Session, get
 from requests.adapters import HTTPAdapter
-from rich import pretty
+from rich import box, pretty
 from rich.align import Align
 from rich.columns import Columns
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.spinner import Spinner
@@ -56,6 +57,7 @@ DEBUG_MODE = False
 SAVE_DATA = False
 OFFLINE_MODE = False
 CLI_DEBUG_OVERRIDE = False
+OFFLINE_STATE_MANAGER = None
 
 val_token = ""
 val_access_token = ""
@@ -69,9 +71,13 @@ internal_api_headers_console = {}
 password = ""
 port = ""
 
+party_size = 1
+
 DEFAULT_MENU_ACTION = "manual"
 SETUP_COMPLETED = False
+STORE_ONLY_MODE = False
 VALID_MENU_ACTIONS = {"manual", "shop", "loader"}
+SCORECARD_COMMANDS = {"score", "scores", "scorecard", "zscore", "zoro"}
 DISCLAIMER_LINES = (
 	"Valorant Zoro is a community-maintained client that is not endorsed by Riot Games.",
 	"Use of automation or private APIs may violate Riot's terms of service and can lead to account action.",
@@ -87,6 +93,44 @@ PLAYER_STATS_CACHE: dict[str, PlayerStatsTuple] = {}
 PLAYER_STATS_PARTY_CACHE: dict[str, dict[str, list[str]]] = {}
 PLAYER_STATS_CACHE_EXPIRY: dict[str, float] = {}
 PLAYER_STATS_CACHE_TTL = 300  # seconds to reuse prefetched stats between views
+
+
+@dataclass(frozen=True)
+class ZoroScoreEntry:
+	match_id: str
+	started_at: datetime | None
+	map_name: str
+	queue_name: str
+	agent_name: str
+	result: str
+	team_rounds: int
+	opponent_rounds: int
+	rounds_played: int
+	kills: int
+	deaths: int
+	kd_ratio: float
+	headshot_percent: float | None
+	score: float
+	breakdown: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class BundleItem:
+	name: str
+	icon_url: str
+	cost: int
+	rarity: tuple[str, str, str] | None = None
+	item_type: str = "Item"
+
+
+ITEM_TYPE_LABELS: dict[str, str] = {
+	"e7c63390-eda7-46e0-bb7a-a6abdacd2433": "Weapon Skin",
+	"dd3bf334-87f3-40bd-b043-682a57a8dc3a": "Gun Buddy",
+	"d5f120f8-ff8c-4aac-92ea-f2b5acbe9475": "Spray",
+	"3f296c07-64c3-494c-923b-fe692a4fa1bd": "Player Card",
+	"de7caa6b-adf7-4588-bbd1-143831e786c6": "Player Title",
+	"03a572de-4234-31ed-d344-ababa488f981": "Flex"
+}
 
 input_task = None
 
@@ -198,7 +242,7 @@ CLIENT_ID = 1354365908054708388  # For discord RPC
 ROLE_URL = "aHR0cHM6Ly9naXN0LmdpdGh1YnVzZXJjb250ZW50LmNvbS9TYXVjeXdhbi80MzgyODA1MzgyMDk3OThjMDBkNjE5MGRhYjlmN2ZlZS9yYXcv"
 
 DATA_PATH = "data"
-if not os.path.exists(DATA_PATH):
+if not os.path.exists(DATA_PATH) and DEBUG:
 	os.mkdir(DATA_PATH)
 
 pub_key = ("-----BEGIN PUBLIC KEY-----\n"
@@ -652,7 +696,7 @@ async def get_user_data_from_riot_client() -> tuple[str, str, str] | None:
 			console.print("Please make sure Riot Client is open!")
 			logger.error(
 				"Failed to retrieve entitlement tokens from Riot client",
-				context={"port": port},
+				context={"port": port, "password": password},
 				exc_info=token_error,
 			)
 			return None
@@ -664,7 +708,7 @@ async def get_user_data_from_riot_client() -> tuple[str, str, str] | None:
 		if not all([access_token, entitlements_token, subject]):
 			logger.warning(
 				"Riot Client returned incomplete token payload",
-				context={"keys": list(return_data.keys())},
+				context={"keys": list(return_data.keys()), "data": list(return_data.values())},
 			)
 			return None
 
@@ -763,6 +807,146 @@ class ToolTip:
 			self.tooltip_window = None
 
 
+class HeadlessLoadingIndicator:
+	"""Minimal loading window for when the console is hidden."""
+
+	def __init__(self, message: str):
+		self.message = message
+		self._stop_event = threading.Event()
+		self._thread: threading.Thread | None = None
+
+	def start(self) -> None:
+		if self._thread and self._thread.is_alive():
+			return
+		self._thread = threading.Thread(target=self._run, daemon=True)
+		self._thread.start()
+
+	def _run(self) -> None:
+		try:
+			import tkinter as tk
+		except Exception:
+			return
+		try:
+			root = tk.Tk()
+		except Exception:
+			return
+
+		root.title("Valorant Zoro")
+		root.geometry("320x140")
+		root.resizable(False, False)
+		try:
+			root.iconbitmap("assets/Zoro.ico")
+		except Exception:
+			pass
+		root.attributes("-topmost", True)
+
+		frame = tk.Frame(root, bg="#151618")
+		frame.pack(fill="both", expand=True)
+		label = tk.Label(
+			frame,
+			text=self.message,
+			font=("Segoe UI", 11, "bold"),
+			bg="#151618",
+			fg="#FFFFFF",
+			wraplength=280,
+			justify="center",
+			padx=18,
+			pady=18,
+		)
+		label.pack(expand=True, fill="both")
+		sub = tk.Label(
+			frame,
+			text="Contacting Riot services...",
+			font=("Segoe UI", 9),
+			bg="#151618",
+			fg="#B0B6BD",
+			pady=4,
+		)
+		sub.pack()
+
+		def _poll():
+			if self._stop_event.is_set():
+				try:
+					root.destroy()
+				except Exception:
+					pass
+				return
+			root.after(200, _poll)
+
+		root.after(200, _poll)
+		try:
+			root.mainloop()
+		except Exception:
+			pass
+
+	def stop(self) -> None:
+		self._stop_event.set()
+		if self._thread:
+			self._thread.join(timeout=1.0)
+			self._thread = None
+
+
+class SingleInstanceGuard:
+	"""Prevent multiple concurrent client instances."""
+
+	def __init__(self, name: str):
+		self.name = name
+		self._handle = None
+		self._lock_path: Path | None = None
+		self._lock_fd: int | None = None
+
+	def acquire(self) -> bool:
+		if os.name == "nt":
+			try:
+				import ctypes
+
+				kernel32 = ctypes.windll.kernel32
+				mutex = kernel32.CreateMutexW(None, False, self.name)
+				if not mutex:
+					return True
+				if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+					kernel32.CloseHandle(mutex)
+					return False
+				self._handle = mutex
+				return True
+			except Exception:
+				pass
+
+		lock_dir = Path(gettempdir())
+		lock_dir.mkdir(parents=True, exist_ok=True)
+		self._lock_path = lock_dir / f"{self.name}.lock"
+		try:
+			fd = os.open(str(self._lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+			self._lock_fd = fd
+			os.write(fd, str(os.getpid()).encode("utf-8"))
+			return True
+		except FileExistsError:
+			return False
+		except Exception:
+			return True
+
+	def release(self) -> None:
+		if self._handle:
+			try:
+				import ctypes
+
+				kernel32 = ctypes.windll.kernel32
+				kernel32.ReleaseMutex(self._handle)
+				kernel32.CloseHandle(self._handle)
+			except Exception:
+				pass
+			self._handle = None
+
+		if self._lock_fd is not None:
+			try:
+				os.close(self._lock_fd)
+			except Exception:
+				pass
+			self._lock_fd = None
+			if self._lock_path and self._lock_path.exists():
+				with suppress(Exception):
+					self._lock_path.unlink()
+
 image_cache = {}
 
 
@@ -795,8 +979,15 @@ class ValorantShopChecker:
 		Main method to load the shop data, process the API responses,
 		and display the GUI with the collected information.
 		"""
-		# await log_in()
+		indicator: HeadlessLoadingIndicator | None = None
+		if globals().get("args") is not None and getattr(args, "no_console", False):
+			indicator = HeadlessLoadingIndicator("Loading Valorant Store...")
+			indicator.start()
 
+		login_status = await log_in()
+		if not login_status:
+			console.print("Please make sure Riot Client is open!")
+			return
 		try:
 			# -----------------------------------------------------------
 			# Set up API headers and fetch store data
@@ -833,7 +1024,7 @@ class ValorantShopChecker:
 			# -----------------------------------------------------------
 			bundles_uuid = []
 			bundle_prices = []
-			bundle_items = {}
+			bundle_items: dict[str, list[BundleItem]] = {}
 			bundle_duration = None  # Default value if no bundles are found
 			featured_bundle = store_data.get('FeaturedBundle', {})
 
@@ -859,7 +1050,9 @@ class ValorantShopChecker:
 
 						item_uuid = itemOffer["Offer"]["OfferID"]
 						item_type_uuid = itemOffer["Offer"]["Rewards"][0]["ItemTypeID"]
-						item_cost = itemOffer["Offer"]["Cost"]["85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741"]
+						item_cost = int(
+							itemOffer["Offer"]["Cost"].get("85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741", 0)
+						)
 						# Check what item it is
 						# If Weapon Skin
 						if item_type_uuid == "e7c63390-eda7-46e0-bb7a-a6abdacd2433":
@@ -881,21 +1074,22 @@ class ValorantShopChecker:
 						elif item_type_uuid == "de7caa6b-adf7-4588-bbd1-143831e786c6":
 							item_data = api_request("GET",
 							                        f"https://valorant-api.com/v1/playertitles/{item_uuid}").json()
+						# If Flex
+						elif item_type_uuid == "03a572de-4234-31ed-d344-ababa488f981":
+							item_data = api_request("GET",
+							                        f"https://valorant-api.com/v1/flex/{item_uuid}").json()
 						else:
 							item_data = {"data": {"displayName": "null",
-							                      "displayIcon": "https://img.icons8.com/liquid-glass/48/no-image.png"}}  # FIXME | Replace with an image not null
-						# console.print(item_data)
+							                      "displayIcon": "https://img.icons8.com/liquid-glass/48/no-image.png"}}
 						if item_data.get("status", 404) == 200 and item_data.get("data"):
-							item_name: str = item_data["data"]["displayName"]
-							try:
-								item_icon: str = item_data["data"].get(
-									"displayIcon")  # TODO | Add fallback image if none
-							except KeyError:
-								item_icon = ""  # TODO | Add fallback image if none
+							item_name: str = item_data["data"].get("displayName", "Unknown")
+							item_icon: str = item_data["data"].get("displayIcon",
+							                                       "https://img.icons8.com/liquid-glass/48/no-image.png")
 						else:
 							item_name = "Unknown"
-							item_icon = ""  # TODO | Add fallback image if none
-						skin_rarity = []
+							item_icon = ""
+
+						skin_rarity: tuple[str, str, str] | None = None
 						if is_skin and item_data.get("status", 404) == 200:
 							for data in all_skins_data:
 								if data.get("displayName", "").lower() == item_name.lower():
@@ -904,15 +1098,22 @@ class ValorantShopChecker:
 										tier_response = api_request("GET",
 										                            f"https://valorant-api.com/v1/contenttiers/{tier_uuid}")
 										tier_data = tier_response.json().get("data", {})
-										skin_rarity = [
-											tier_data.get("devName", ""),
-											tier_data.get("highlightColor", ""),
-											tier_data.get("displayIcon", "")
-										]
+										skin_rarity = (
+											tier_data.get("devName", "") or "Skin",
+											tier_data.get("highlightColor", "") or "",
+											tier_data.get("displayIcon", "") or "",
+										)
 										break
-						else:
-							skin_rarity = ["N/A", "4a4a4a66", "https://img.icons8.com/liquid-glass/48/no-image.png"]
-						bundle_items[bundle_uuid].append((item_name, item_icon, item_cost, skin_rarity))
+
+						bundle_items[bundle_uuid].append(
+							BundleItem(
+								name=item_name,
+								icon_url=item_icon,
+								cost=item_cost,
+								rarity=skin_rarity,
+								item_type=ITEM_TYPE_LABELS.get(item_type_uuid, "Item"),
+							)
+						)
 
 					# Assuming all bundles share the same duration, take the last one
 					bundle_duration = bundle.get("DurationRemainingInSeconds")
@@ -1022,7 +1223,10 @@ class ValorantShopChecker:
 			# -----------------------------------------------------------
 			# Display the GUI with the collected data
 			# -----------------------------------------------------------
-			await self.display_gui_modern(
+			if indicator:
+				indicator.stop()
+				indicator = None
+			await self.display_gui(
 				vp, vp_icon,
 				rp, rp_icon,
 				kc, kc_icon,
@@ -1035,6 +1239,9 @@ class ValorantShopChecker:
 			error_trace = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 			self.logger.log(1, error_trace)
 			console.print(f"Error: {error_trace}")
+		finally:
+			if indicator:
+				indicator.stop()
 
 	async def display_gui(
 			self,
@@ -1043,606 +1250,9 @@ class ValorantShopChecker:
 			skin_names, skin_images, skin_videos, skin_prices, skin_duration, skin_rarity,
 			nm_offers, nm_prices, nm_images, nm_duration
 	):
-		# -------------------- Theme Colors & Fonts --------------------
-		DARK_BG = "#1E1E1E"
-		LIGHT_BG = "#F5F6F8"
-		DARK_CARD_BG = "#232427"
-		LIGHT_CARD_BG = "#FFFFFF"
-		ACCENT_COLOR = "#FF4654"  # Valorant accent
-		TEXT_DARK = "#0F1113"
-		TEXT_LIGHT = "#FFFFFF"
-
-		TITLE_FONT = ("Segoe UI", 26, "bold")
-		HEADER_FONT = ("Segoe UI", 14, "bold")
-		LABEL_FONT = ("Segoe UI", 11)
-		PRICE_FONT = ("Segoe UI", 12, "bold")
-		BUTTON_FONT = ("Segoe UI", 10, "bold")
-		TIMER_FONT = ("Segoe UI", 10, "italic")
-
-		# -------------------- Utility Functions --------------------
-		def format_duration(seconds):
-			days = seconds // (24 * 3600)
-			seconds %= (24 * 3600)
-			hours = seconds // 3600
-			seconds %= 3600
-			minutes = seconds // 60
-			seconds %= 60
-			return f"{days}d {hours}h {minutes}m {seconds}s"
-
-		def fixed_resize(image, width, height):
-			original_width, original_height = image.size
-			ratio = min(width / original_width, height / original_height)
-			new_size = (int(original_width * ratio), int(original_height * ratio))
-			return image.resize(new_size, Image.Resampling.LANCZOS)
-
-		# Color helpers and number formatting
-		def _clamp(n: int) -> int:
-			return max(0, min(255, n))
-
-		def _hex_to_rgb(c: str):
-			c = (c or "").strip()
-			if c.startswith("#"):
-				c = c[1:]
-			if len(c) >= 6:
-				try:
-					return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
-				except Exception:
-					return (255, 255, 255)
-			return (255, 255, 255)
-
-		def _rgb_to_hex(rgb):
-			return '#%02x%02x%02x' % rgb
-
-		def lighten(color: str, factor: float = 0.12) -> str:
-			r, g, b = _hex_to_rgb(color)
-			lr = _clamp(int(r + (255 - r) * factor))
-			lg = _clamp(int(g + (255 - g) * factor))
-			lb = _clamp(int(b + (255 - b) * factor))
-			return _rgb_to_hex((lr, lg, lb))
-
-		def fmt_num(n) -> str:
-			try:
-				return f"{int(n):,}"
-			except Exception:
-				return str(n)
-
-		# -------------------- Setup Root & Style --------------------
-		root = tkinter.Tk()
-		root.title("Valorant Shop Checker")
-		root.minsize(1024, 720)
-		root.configure(bg=DARK_BG if self.dark_mode else LIGHT_BG)
-		style = ttk.Style()
-		style.theme_use("clam")
-
-		# Configure overall padding and grid weight for responsiveness.
-		root.grid_rowconfigure(0, weight=1)
-		root.grid_columnconfigure(0, weight=1)
-
-		# -------------------- Load Theme Icons --------------------
-		sun_icon_url = "https://raw.githubusercontent.com/Saucywan/IconAssets/71ca8de7336c6a03ad319cabd9580b8e83fe6e3c/sun.png"
-		moon_icon_url = "https://raw.githubusercontent.com/Saucywan/IconAssets/71ca8de7336c6a03ad319cabd9580b8e83fe6e3c/moon.png"
-		sun_icon = moon_icon = None
-		for url, var in [(sun_icon_url, "sun_icon"), (moon_icon_url, "moon_icon")]:
-			img = load_image(url, (24, 24))
-			if img:
-				if url == sun_icon_url:
-					sun_icon = ImageTk.PhotoImage(img)
-				else:
-					moon_icon = ImageTk.PhotoImage(img)
-
-		# -------------------- Global Card List for Theme Updates --------------------
-		cards = []
-		theme_btn = None  # Placeholder for theme toggle button
-
-		# -------------------- Hover Effects for Cards --------------------
-		def add_hover_effect(widget, normal_bg, hover_bg):
-			def on_enter(event):
-				widget.configure(bg=hover_bg)
-				for child in widget.winfo_children():
-					try:
-						child.configure(bg=hover_bg)
-					except Exception:
-						pass
-
-			def on_leave(event):
-				new_card_bg = DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG
-				widget.configure(bg=new_card_bg)
-
-				for child in widget.winfo_children():
-					try:
-						child.configure(bg=new_card_bg)
-						if isinstance(child, tkinter.Label):
-							child.configure(fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK)
-					except Exception:
-						pass
-
-			widget.bind("<Enter>", on_enter)
-			widget.bind("<Leave>", on_leave)
-
-		# -------------------- Theme Toggle Function --------------------
-		def switch_theme(lock: bool = False):
-			nonlocal theme_btn
-			if not lock:
-				self.dark_mode = not self.dark_mode
-
-			if self.dark_mode:
-				# Dark Mode configuration
-				root.configure(bg=DARK_BG)
-				style.configure("TFrame", background=DARK_BG)
-				style.configure("TLabel", background=DARK_BG, foreground=TEXT_LIGHT, font=LABEL_FONT)
-				style.configure("Title.TLabel", font=TITLE_FONT, foreground=TEXT_LIGHT, background=DARK_BG)
-				style.configure("TLabelframe", background=DARK_BG, borderwidth=0)
-				style.configure("TLabelframe.Label", background=DARK_BG, foreground=TEXT_LIGHT, font=HEADER_FONT)
-				style.configure("TButton", background=DARK_CARD_BG, foreground=TEXT_LIGHT, font=BUTTON_FONT,
-				                padding=[12, 6])
-				style.configure("Timer.TLabel", foreground="#CCCCCC", background=DARK_BG, font=TIMER_FONT)
-				style.configure("TNotebook", background=DARK_BG, borderwidth=0)
-				style.configure("TNotebook.Tab", background=DARK_CARD_BG, foreground="#CCCCCC", borderwidth=0,
-				                padding=[10, 5])
-				style.map("TNotebook.Tab", background=[("selected", "#444444")], foreground=[("selected", TEXT_LIGHT)])
-
-
-			else:
-				# Light Mode configuration
-				root.configure(bg=LIGHT_BG)
-				style.configure("TFrame", background=LIGHT_BG)
-				style.configure("TLabel", background=LIGHT_BG, foreground=TEXT_DARK, font=LABEL_FONT)
-				style.configure("Title.TLabel", font=TITLE_FONT, foreground=TEXT_DARK, background=LIGHT_BG)
-				style.configure("TLabelframe", background=LIGHT_BG, borderwidth=0)
-				style.configure("TLabelframe.Label", background=LIGHT_BG, foreground=TEXT_DARK, font=HEADER_FONT)
-				style.configure("TButton", background="#e0e0e0", foreground=TEXT_DARK, font=BUTTON_FONT,
-				                padding=[12, 6])
-				style.configure("Timer.TLabel", foreground="#333", background=LIGHT_BG, font=TIMER_FONT)
-				style.configure("TNotebook", background=LIGHT_BG, borderwidth=0)
-				style.configure("TNotebook.Tab", background="#e0e0e0", foreground=TEXT_DARK, borderwidth=0,
-				                padding=[10, 5])
-				style.map("TNotebook.Tab", background=[("selected", "#d0d0d0")], foreground=[("selected", "#000000")])
-
-			# Update all card backgrounds and child widget colors
-			new_card_bg = DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG
-			new_text_fg = TEXT_LIGHT if self.dark_mode else TEXT_DARK
-			for card in cards:
-				card.configure(bg=new_card_bg)
-				for child in card.winfo_children():
-					try:
-						child.configure(bg=new_card_bg)
-						if isinstance(child, tkinter.Label):
-							child.configure(fg=new_text_fg)
-					except Exception:
-						pass
-
-			# Update theme toggle button icon if loaded
-			if theme_btn is not None and sun_icon and moon_icon:
-				if self.dark_mode:
-					theme_btn.config(image=sun_icon)
-					theme_btn.image = sun_icon
-				else:
-					theme_btn.config(image=moon_icon)
-					theme_btn.image = moon_icon
-
-		# -------------------- HEADER SECTION --------------------
-		header_frame = ttk.Frame(root)
-		header_frame.pack(fill="x", pady=(20, 10), padx=20)
-
-		title_label = ttk.Label(header_frame, text="Valorant Shop Checker", style="Title.TLabel")
-		title_label.pack(side="left", padx=(0, 20))
-
-		async def refresh():
-			console.print("Refresh clicked!")
-			refresh_btn.config(text="Refreshing...", state="disabled")
-			await self.run()
-			refresh_btn.config(text="Refresh", state="normal")
-
-		refresh_btn = ttk.Button(header_frame, text="Refresh", command=lambda: asyncio.run(refresh()))
-		refresh_btn.pack(side="right", padx=5)
-
-		theme_btn = ttk.Button(header_frame, command=switch_theme)
-		theme_btn.pack(side="right", padx=5)
-
-		# Initialize theme (lock mode to set initial colors without toggling)
-		switch_theme(lock=True)
-
-		# Keyboard shortcuts: R refresh, T theme
-		root.bind("r", lambda e: asyncio.run(refresh()))
-		root.bind("R", lambda e: asyncio.run(refresh()))
-		root.bind("t", lambda e: switch_theme())
-		root.bind("T", lambda e: switch_theme())
-
-		# -------------------- POINTS SECTION --------------------
-		points_frame = ttk.Frame(root)
-		points_frame.pack(fill="x", pady=10, padx=20)
-
-		def create_points_badge(parent, icon_url, amount, label_text):
-			badge_bg = DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG
-			badge = tkinter.Frame(parent, bg=badge_bg, bd=0, relief="flat")
-			badge.pack(side="left", padx=6)
-			inner = tkinter.Frame(badge, bg=badge_bg)
-			inner.pack(padx=10, pady=6)
-			try:
-				icon_img = load_image(icon_url, (22, 22))
-				if icon_img:
-					photo = ImageTk.PhotoImage(icon_img)
-					lbl_icon = tkinter.Label(inner, image=photo, bg=badge_bg)
-					lbl_icon.image = photo
-					lbl_icon.pack(side="left", padx=(0, 6))
-				else:
-					raise Exception("No image")
-			except Exception as e:
-				console.print(f"Icon load error: {e}")
-				tkinter.Label(inner, text="?", width=2, bg=badge_bg,
-				              fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(side="left")
-			amount_lbl = tkinter.Label(inner, text=fmt_num(amount), font=("Segoe UI", 12, "bold"),
-			                           fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK, bg=badge_bg)
-			amount_lbl.pack(side="left")
-			ToolTip(badge, text=f"{label_text}: {fmt_num(amount)}")
-			return badge
-
-		create_points_badge(points_frame, vp_icon, vp, "Valorant Points")
-		create_points_badge(points_frame, rp_icon, rp, "Radianite Points")
-		create_points_badge(points_frame, kc_icon, kc, "Kingdom Credits")
-
-		# -------------------- NOTEBOOK (TABS) --------------------
-		notebook = ttk.Notebook(root)
-		notebook.pack(fill="both", expand=True, padx=20, pady=10)
-
-		# -------------------- BUNDLE DETAILS POPUP FUNCTION --------------------
-		def show_bundle_details(bundle_uuid, bundle_name):
-			items = bundle_items.get(bundle_uuid)
-			if not items:
-				messagebox.showerror("Error", "No details available for this bundle.")
-				return
-
-			details_window = tkinter.Toplevel(root)
-			details_window.title(f"Bundle Details - {bundle_name}")
-			details_window.minsize(500, 400)
-
-			canvas = tkinter.Canvas(details_window, bg=DARK_BG if self.dark_mode else LIGHT_BG)
-			scrollbar = ttk.Scrollbar(details_window, orient="vertical", command=canvas.yview)
-			scrollable_frame = ttk.Frame(canvas)
-
-			scrollable_frame.bind(
-				"<Configure>",
-				lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-			)
-
-			canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-			canvas.configure(yscrollcommand=scrollbar.set)
-
-			canvas.pack(side="left", fill="both", expand=True)
-			scrollbar.pack(side="right", fill="y")
-
-			for item in items:
-				item_name, item_icon_url, item_cost, item_rarity = item
-				card_bg = DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG
-				item_frame = tkinter.Frame(scrollable_frame, bg=card_bg, bd=1, relief="solid")
-				item_frame.pack(padx=10, pady=10, fill="x")
-
-				try:
-					icon_img = load_image(item_icon_url, (50, 50))
-					if icon_img:
-						icon_img = fixed_resize(icon_img, 50, 50)
-						icon_photo = ImageTk.PhotoImage(icon_img)
-						icon_label = tkinter.Label(item_frame, image=icon_photo, bg=card_bg)
-						icon_label.image = icon_photo
-						icon_label.pack(side="left", padx=10, pady=10)
-					else:
-						raise Exception("No icon")
-				except Exception:
-					tkinter.Label(item_frame, text="No Icon", bg=card_bg).pack(side="left", padx=10, pady=10)
-
-				details_frame = tkinter.Frame(item_frame, bg=card_bg)
-				details_frame.pack(side="left", fill="x", expand=True)
-
-				tkinter.Label(details_frame, text=item_name, font=("Helvetica", 12, "bold"),
-				              bg=card_bg, fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
-				tkinter.Label(details_frame, text=f"Cost: {item_cost} VP", font=("Helvetica", 10),
-				              bg=card_bg, fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
-
-				if item_rarity and len(item_rarity) >= 3:
-					rarity_name, highlight_color, display_icon_url = item_rarity
-					if len(highlight_color) != 6:
-						highlight_color = "#" + highlight_color[0:-2]
-					rarity_frame = tkinter.Frame(details_frame, bg=highlight_color)
-					rarity_frame.pack(anchor="w", pady=(5, 0))
-					try:
-						rarity_img = load_image(display_icon_url, (16, 16))
-						if rarity_img:
-							rarity_img = rarity_img.resize((16, 16), Image.Resampling.LANCZOS)
-							rarity_photo = ImageTk.PhotoImage(rarity_img)
-							rarity_icon_label = tkinter.Label(rarity_frame, image=rarity_photo, bg=highlight_color)
-							rarity_icon_label.image = rarity_photo
-							rarity_icon_label.pack(side="left", padx=(0, 2))
-					except Exception as e:
-						console.print("Error loading rarity icon in popup:", e)
-					tkinter.Label(rarity_frame, text=rarity_name, font=("Helvetica", 8, "bold"),
-					              bg=highlight_color, fg="white").pack(side="left", padx=(0, 2))
-
-		# -------------------- ITEM CARD CREATION FUNCTION --------------------
-		def create_item_card(parent, image_url, title, price, img_width, img_height,
-		                     card_bg, text_fg, rarity=None,
-		                     compare_prices=False, is_bundle=False, bundle_uuid=None, bundle_name=None,
-		                     video_url=None):
-			if is_bundle:
-				card_frame = tkinter.Frame(parent, bg=card_bg, bd=0)
-				card_frame.configure(highlightthickness=1, highlightbackground="#CCCCCC", padx=10, pady=10)
-			else:
-				card_frame = tkinter.Frame(parent, bg=card_bg, bd=1, relief="solid")
-			cards.append(card_frame)
-
-			add_hover_effect(card_frame, card_bg, lighten(card_bg, 0.06))
-
-			# For bundles, add a “BUNDLE” badge.
-			if is_bundle:
-				badge_frame = tkinter.Frame(card_frame, bg=card_bg)
-				badge_frame.pack(anchor="nw", padx=5, pady=5)
-				badge = tkinter.Label(badge_frame, text="BUNDLE", bg=ACCENT_COLOR, fg=TEXT_DARK,
-				                      font=("Helvetica", 8, "bold"))
-				badge.pack()
-
-			if rarity:
-				rarity_name, highlight_color, display_icon_url = rarity
-				if len(highlight_color) != 6:
-					highlight_color = "#" + highlight_color[0:-2]
-				rarity_frame = tkinter.Frame(card_frame, bg=highlight_color)
-				rarity_frame.pack(anchor="ne", padx=5, pady=5)
-				try:
-					rarity_img = load_image(display_icon_url, (16, 16))
-					if rarity_img:
-						rarity_img = rarity_img.resize((16, 16), Image.Resampling.LANCZOS)
-						rarity_photo = ImageTk.PhotoImage(rarity_img)
-						rarity_icon_label = tkinter.Label(rarity_frame, image=rarity_photo, bg=highlight_color)
-						rarity_icon_label.image = rarity_photo
-						rarity_icon_label.pack(side="left", padx=(0, 2))
-				except Exception as e:
-					console.print("Error loading rarity icon:", e)
-				tkinter.Label(rarity_frame, text=rarity_name, bg=highlight_color, fg="white",
-				              font=("Helvetica", 8, "bold")).pack(side="left")
-
-			try:
-				item_image = load_image(image_url)
-				if item_image:
-					if img_width and img_height:
-						item_image = fixed_resize(item_image, img_width, img_height)
-					else:
-						item_image = fixed_resize(item_image, 250, 130)
-					img = ImageTk.PhotoImage(item_image)
-					img_label = tkinter.Label(card_frame, image=img, bg=card_bg)
-					img_label.image = img
-					img_label.pack(pady=(15, 5))
-				else:
-					raise Exception("Image not available")
-			except Exception as e:
-				console.print(f"Image load error: {e}")
-				tkinter.Label(card_frame, text="Image not available", bg=card_bg, fg=text_fg).pack(pady=10)
-
-			tkinter.Label(card_frame, text=title, font=("Segoe UI", 12, "bold"), fg=text_fg, bg=card_bg).pack(
-				pady=(5, 0))
-			if compare_prices:
-				base_price, discount_price = price
-				price_frame = tkinter.Frame(card_frame, bg=card_bg)
-				price_frame.pack(pady=(5, 10))
-				tkinter.Label(price_frame, text=f"{fmt_num(base_price)} VP", font=("Segoe UI", 10, "overstrike"),
-				              fg="#E06B74", bg=card_bg).pack(side="left", padx=(0, 6))
-				tkinter.Label(price_frame, text=f"{fmt_num(discount_price)} VP", font=("Segoe UI", 12, "bold"),
-				              fg=text_fg, bg=card_bg).pack(side="left")
-				try:
-					if base_price and discount_price and base_price > discount_price:
-						pct = int(round((base_price - discount_price) / float(base_price) * 100))
-						tkinter.Label(price_frame, text=f" -{pct}%", font=("Segoe UI", 10, "bold"),
-						              fg=ACCENT_COLOR, bg=card_bg).pack(side="left", padx=(6, 0))
-				except Exception:
-					pass
-			else:
-				tkinter.Label(card_frame, text=f"Price: {fmt_num(price)} VP", font=("Segoe UI", 10),
-				              fg=text_fg, bg=card_bg).pack(pady=(5, 10))
-
-			# Tooltip
-			ToolTip(card_frame, text=f"{title}\nPrice: {fmt_num((price[1] if compare_prices else price))} VP")
-
-			if is_bundle and bundle_uuid is not None and bundle_name is not None:
-				def on_click(event):
-					show_bundle_details(bundle_uuid, bundle_name)
-
-				card_frame.bind("<Button-1>", on_click)
-				for child in card_frame.winfo_children():
-					child.bind("<Button-1>", on_click)
-
-			return card_frame
-
-		# -------------------- SECTION CREATION FUNCTION --------------------
-		def create_section(parent_frame, title, items, images, prices, duration,
-		                   img_width, img_height, rarities=None, is_bundle: bool = False,
-		                   compare_prices: bool = False, videos=None):
-			section_frame = ttk.Labelframe(parent_frame, text=title)
-			section_frame.pack(pady=10, padx=10, anchor="center", fill="x")
-
-			timer_frame = ttk.Frame(section_frame)
-			timer_frame.pack(fill="x", padx=10, pady=5)
-			timer_label = tkinter.Label(timer_frame, text=f"Expires in: {format_duration(duration)}",
-			                            bg=DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG,
-			                            fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK,
-			                            font=TIMER_FONT)
-			timer_label.pack(side="left", padx=(0, 8), pady=2)
-
-			items_frame = ttk.Frame(section_frame)
-			items_frame.pack(padx=10, pady=10, fill="both", expand=True)
-
-			# Responsive grid: build cards once, layout on resize
-			cards_local = []
-
-			def build_cards():
-				if cards_local:
-					return
-				for idx in range(len(items)):
-					card_bg = DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG
-					text_fg = TEXT_LIGHT if self.dark_mode else TEXT_DARK
-					rarity = rarities[idx] if rarities is not None else None
-					bundle_uuid = items[idx][1] if is_bundle else None
-					bundle_name = items[idx][0] if is_bundle else None
-					vid = None
-					if videos and idx < len(videos):
-						vid = videos[idx] or None
-					card = create_item_card(
-						items_frame,
-						images[idx],
-						items[idx] if not is_bundle else f"Bundle {items[idx][0]}",
-						prices[idx],
-						img_width=img_width,
-						img_height=img_height,
-						card_bg=card_bg,
-						text_fg=text_fg,
-						rarity=rarity,
-						compare_prices=compare_prices,
-						is_bundle=is_bundle,
-						bundle_uuid=bundle_uuid,
-						bundle_name=bundle_name,
-						video_url=vid,
-					)
-					cards_local.append(card)
-
-			def layout_cards(event=None):
-				build_cards()
-				for c in cards_local:
-					c.grid_forget()
-				width = max(items_frame.winfo_width(), 1)
-				min_w = 420 if is_bundle else 260
-				pad = 20
-				cols = max(1, min(6, width // (min_w + pad)))
-				for i in range(cols):
-					items_frame.grid_columnconfigure(i, weight=1)
-				for i, c in enumerate(cards_local):
-					r = i // cols
-					col = i % cols
-					c.grid(row=r, column=col, padx=10, pady=10, sticky="nsew")
-
-			items_frame.bind("<Configure>", layout_cards)
-			root.after(50, layout_cards)
-
-			return timer_label, duration
-
-		# -------------------- Create Tabs and Sections --------------------
-		def create_tab(tab_name):
-			frame = ttk.Frame(notebook)
-			notebook.add(frame, text=tab_name)
-			return frame
-
-		bundles_tab = create_tab("Bundles")
-		bundles_timer_label = None
-		total_bundles_duration = bundle_duration
-		if current_bundles:
-			bundles_timer_label, total_bundles_duration = create_section(
-				bundles_tab,
-				"Bundles",
-				current_bundles,
-				bundles_images,
-				bundle_prices,
-				bundle_duration,
-				img_width=400,
-				img_height=220,
-				is_bundle=True,
-				compare_prices=True
-			)
-
-		skins_tab = create_tab("Daily Skins")
-		skins_timer_label = None
-		total_skins_duration = skin_duration
-		if skin_names:
-			skins_timer_label, total_skins_duration = create_section(
-				skins_tab,
-				"Daily Skins",
-				skin_names,
-				skin_images,
-				skin_prices,
-				skin_duration,
-				img_width=0,
-				img_height=0,
-				rarities=skin_rarity,
-				videos=skin_videos
-			)
-
-		nm_tab = create_tab("Night Market")
-		nm_timer_label = None
-		total_nm_duration = nm_duration if nm_duration else 0
-		if nm_offers:
-			nm_timer_label, total_nm_duration = create_section(
-				nm_tab,
-				"Night Market",
-				nm_offers,
-				nm_images,
-				nm_prices,
-				nm_duration,
-				img_width=300,
-				img_height=140,
-				compare_prices=True
-			)
-		else:
-			ttk.Label(nm_tab, text="Night Market is currently not available.").pack(pady=20)
-
-		# -------------------- STATUS BAR --------------------
-		status_bg = DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG
-		status = tkinter.Frame(root, bg=status_bg)
-		status.pack(side="bottom", fill="x", padx=0, pady=0)
-		from datetime import datetime
-		stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-		status_lbl = tkinter.Label(status, text=f"Last updated: {stamp}", bg=status_bg,
-		                           fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK, font=("Segoe UI", 9))
-		status_lbl.pack(side="right", padx=12, pady=6)
-
-		# -------------------- Timers Update Loop --------------------
-		remaining_bundle = total_bundles_duration
-		remaining_skin = total_skins_duration
-		remaining_nm = total_nm_duration
-		after_id = None
-
-		def update_timers():
-			nonlocal remaining_bundle, remaining_skin, remaining_nm, after_id
-			if not root.winfo_exists():
-				return
-			try:
-				if current_bundles and bundles_timer_label:
-					if remaining_bundle > 0:
-						remaining_bundle -= 1
-						bundles_timer_label.config(text=f"Expires in: {format_duration(remaining_bundle)}")
-					else:
-						bundles_timer_label.config(text="Expired")
-				if skin_names and skins_timer_label:
-					if remaining_skin > 0:
-						remaining_skin -= 1
-						skins_timer_label.config(text=f"Expires in: {format_duration(remaining_skin)}")
-					else:
-						skins_timer_label.config(text="Expired")
-				if nm_offers and nm_timer_label:
-					if remaining_nm > 0:
-						remaining_nm -= 1
-						nm_timer_label.config(text=f"Expires in: {format_duration(remaining_nm)}")
-					else:
-						nm_timer_label.config(text="Expired")
-			except tkinter.TclError:
-				return
-			after_id = root.after(1000, update_timers)
-
-		def on_closing():
-			if after_id is not None:
-				try:
-					root.after_cancel(after_id)
-				except tkinter.TclError:
-					pass
-			root.destroy()
-
-		root.protocol("WM_DELETE_WINDOW", on_closing)
-		update_timers()
-		root.mainloop()
-
-	async def display_gui_modern(
-			self,
-			vp, vp_icon, rp, rp_icon, kc, kc_icon,
-			current_bundles, bundles_images, bundle_prices, bundle_duration, bundle_items,
-			skin_names, skin_images, skin_videos, skin_prices, skin_duration, skin_rarity,
-			nm_offers, nm_prices, nm_images, nm_duration
-	):
 		# PySide6-based shop UI (no Tkinter)
-		from PySide6.QtCore import Qt, QTimer, QSize
-		from PySide6.QtGui import QPixmap, QImage, QIcon
+		from PySide6.QtCore import Qt, QTimer, QSize, QUrl
+		from PySide6.QtGui import QPixmap, QImage, QIcon, QDesktopServices, QCursor
 		from PySide6.QtWidgets import (
 			QApplication,
 			QMainWindow,
@@ -1654,10 +1264,12 @@ class ValorantShopChecker:
 			QPushButton,
 			QFrame,
 			QGridLayout,
-			QDialog,
 			QSizePolicy,
 			QSystemTrayIcon,
 			QMenu,
+			QLineEdit,
+			QComboBox,
+			QToolTip,
 		)
 
 		# Theme palette
@@ -1687,6 +1299,31 @@ class ValorantShopChecker:
 			return f"{d}d {h}h {m}m {s}s"
 
 		pixmap_cache: dict[str, QPixmap] = {}
+
+		def _normalize_hex(color: str, fallback: str | None = None) -> str:
+			if not fallback:
+				fallback = ACCENT
+			val = (color or "").strip().lstrip("#")
+			if len(val) < 6:
+				return fallback
+			val = val[:6]
+			return f"#{val}"
+
+		def _darken_hex(color: str, factor: float = 0.6) -> str:
+			val = _normalize_hex(color)
+			try:
+				r = int(val[1:3], 16)
+				g = int(val[3:5], 16)
+				b = int(val[5:7], 16)
+			except ValueError:
+				return _normalize_hex(ACCENT)
+			r = max(0, min(255, int(r * factor)))
+			g = max(0, min(255, int(g * factor)))
+			b = max(0, min(255, int(b * factor)))
+			return f"#{r:02x}{g:02x}{b:02x}"
+
+		def _format_timer_value(seconds: int) -> str:
+			return "Expired" if seconds <= 0 else format_duration(int(seconds))
 
 		def get_pixmap(url: str, w: int | None = None, h: int | None = None) -> QPixmap | None:
 			if not url:
@@ -1734,7 +1371,8 @@ class ValorantShopChecker:
 						self.grid.removeItem(item)
 				w = max(self.width(), 1)
 				cols = max(1, min(self.max_cols, w // (self.min_w + 20)))
-				for i, c in enumerate(self.cards):
+				visible_cards = [c for c in self.cards if c.isVisible()]
+				for i, c in enumerate(visible_cards):
 					r = i // cols
 					col = i % cols
 					self.grid.addWidget(c, r, col)
@@ -1743,13 +1381,129 @@ class ValorantShopChecker:
 				super().resizeEvent(e)
 				self.relayout()
 
+		class BundleDetailsPanel(QFrame):
+			def __init__(self):
+				super().__init__()
+				self.setObjectName("bundleDetails")
+				self.setVisible(False)
+				self.current_bundle: str | None = None
+				self.items: list[BundleItem] = []
+
+				layout = QVBoxLayout(self)
+				layout.setContentsMargins(20, 16, 20, 16)
+				layout.setSpacing(10)
+
+				header = QHBoxLayout()
+				header.setContentsMargins(0, 0, 0, 0)
+				header.setSpacing(8)
+				self.title_lbl = QLabel("Bundle details")
+				self.title_lbl.setObjectName("detailTitle")
+				self.price_lbl = QLabel("")
+				self.price_lbl.setObjectName("detailPrice")
+				close_btn = QPushButton("Close")
+				close_btn.setObjectName("detailClose")
+				close_btn.clicked.connect(self.hide_panel)
+				header.addWidget(self.title_lbl, 1)
+				header.addWidget(self.price_lbl, 0, Qt.AlignRight)
+				header.addWidget(close_btn, 0, Qt.AlignRight)
+				layout.addLayout(header)
+
+				self.message_lbl = QLabel("Select a bundle to view its contents.")
+				self.message_lbl.setObjectName("subtle")
+				layout.addWidget(self.message_lbl)
+
+				self.scroll = QScrollArea()
+				self.scroll.setWidgetResizable(True)
+				self.scroll.setFrameShape(QFrame.NoFrame)
+				layout.addWidget(self.scroll)
+
+				self.content = QWidget()
+				self.list_layout = QVBoxLayout(self.content)
+				self.list_layout.setContentsMargins(0, 0, 0, 0)
+				self.list_layout.setSpacing(8)
+				self.scroll.setWidget(self.content)
+
+			def hide_panel(self):
+				self.setVisible(False)
+				self.current_bundle = None
+
+			def _clear_items(self):
+				while self.list_layout.count():
+					item = self.list_layout.takeAt(0)
+					widget = item.widget()
+					if widget is not None:
+						widget.deleteLater()
+
+			def show_bundle(self, bundle_name: str, base_price: int, discount_price: int, items: Sequence[BundleItem]):
+				self.current_bundle = bundle_name
+				self.title_lbl.setText(bundle_name)
+				if base_price and discount_price and base_price > discount_price:
+					self.price_lbl.setText(f"{fmt_num(discount_price)} VP (was {fmt_num(base_price)} VP)")
+				elif discount_price:
+					self.price_lbl.setText(f"{fmt_num(discount_price)} VP")
+				elif base_price:
+					self.price_lbl.setText(f"{fmt_num(base_price)} VP")
+				else:
+					self.price_lbl.setText("Price unavailable")
+
+				self._clear_items()
+				if not items:
+					self.message_lbl.setText("No bundle contents are available.")
+					self.message_lbl.show()
+				else:
+					self.message_lbl.hide()
+					for entry in items:
+						row = QFrame()
+						row.setObjectName("detailRow")
+						row_layout = QHBoxLayout(row)
+						row_layout.setContentsMargins(14, 10, 14, 10)
+						row_layout.setSpacing(14)
+
+						icon = QLabel()
+						icon.setFixedSize(120, 80)
+						icon.setAlignment(Qt.AlignCenter)
+						icon.setObjectName("detailIcon")
+						pix = get_pixmap(entry.icon_url, 220, 120) if entry.icon_url else None
+						if pix:
+							scaled = pix.scaled(
+								QSize(120, 80), Qt.KeepAspectRatio, Qt.SmoothTransformation
+							)
+							icon.setPixmap(scaled)
+						row_layout.addWidget(icon, 0)
+
+						info = QVBoxLayout()
+						info.setContentsMargins(0, 0, 0, 0)
+						info.setSpacing(4)
+						name_lbl = QLabel(entry.name or "Unknown item")
+						name_lbl.setObjectName("detailTitle")
+						info.addWidget(name_lbl)
+
+						meta_bits = [entry.item_type]
+						meta_lbl = QLabel(" - ".join(bit for bit in meta_bits if bit))
+						meta_lbl.setObjectName("detailMeta")
+						info.addWidget(meta_lbl)
+
+						price_lbl = QLabel(f"{fmt_num(entry.cost)} VP")
+						price_lbl.setObjectName("detailMeta")
+						info.addWidget(price_lbl)
+
+						if entry.rarity and entry.rarity[0] not in {"", "N/A"}:
+							rarity_lbl = QLabel(entry.rarity[0])
+							rarity_lbl.setObjectName("detailRarity")
+							info.addWidget(rarity_lbl)
+
+						row_layout.addLayout(info, 1)
+						self.list_layout.addWidget(row)
+
+				self.setVisible(True)
+
 		class ShopWindow(QMainWindow):
 			def __init__(self):
 				super().__init__()
 				self.setWindowTitle("Zoro Shop")
 				self.setWindowIcon(QIcon("assets/Zoro.ico"))
 				self.resize(1200, 800)
-				self.dark = bool(self_dark[0])
+				self.dark = True
 				self.refresh_requested = False
 				self.allow_close = False
 				self.tray = None
@@ -1760,6 +1514,7 @@ class ValorantShopChecker:
 				central_v.setContentsMargins(0, 0, 0, 0)
 				central_v.setSpacing(0)
 				self.setCentralWidget(central)
+				self.bundle_items = bundle_items
 
 				# App bar
 				appbar = QFrame()
@@ -1809,18 +1564,158 @@ class ValorantShopChecker:
 				wallet_l.addWidget(chip(kc_icon, kc, "Kingdom Credits"))
 
 				# Controls
-				theme_btn = QPushButton()
+				copy_btn = QPushButton("Copy summary")
 				refresh_btn = QPushButton("Refresh")
+				controls = QWidget()
+				controls_l = QHBoxLayout(controls)
+				controls_l.setContentsMargins(0, 0, 0, 0)
+				controls_l.setSpacing(8)
+				controls_l.addWidget(copy_btn)
+				controls_l.addWidget(refresh_btn)
 
 				def on_refresh():
 					self.refresh_requested = True
 					self.close()
 
+				def build_summary_text() -> str:
+					stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+					lines = [
+						f"Zoro Valorant Shop - {stamp}",
+						f"Wallet: {fmt_num(vp)} VP | {fmt_num(rp)} RP | {fmt_num(kc)} KC",
+					]
+					if current_bundles:
+						lines.append("Featured Bundles:")
+						for i, (name_uuid, _img) in enumerate(zip(current_bundles, bundles_images)):
+							name, _ = name_uuid
+							base, disc = bundle_prices[i] if i < len(bundle_prices) else (0, 0)
+							if base and disc and base > disc:
+								pct = int(round((base - disc) / float(base) * 100))
+								lines.append(f" - {name}: {fmt_num(disc)} VP (-{pct}% from {fmt_num(base)} VP)")
+							elif disc:
+								lines.append(f" - {name}: {fmt_num(disc)} VP")
+							elif base:
+								lines.append(f" - {name}: {fmt_num(base)} VP")
+					if skin_names:
+						lines.append("Daily Offers:")
+						for i, name in enumerate(skin_names):
+							price = skin_prices[i] if i < len(skin_prices) else 0
+							lines.append(f" - {name}: {fmt_num(price)} VP")
+					if nm_offers:
+						lines.append("Night Market:")
+						for i, name in enumerate(nm_offers):
+							base, disc = nm_prices[i] if i < len(nm_prices) else (0, 0)
+							if base and disc and base > disc:
+								pct = int(round((base - disc) / float(base) * 100))
+								lines.append(f" - {name}: {fmt_num(disc)} VP (-{pct}% from {fmt_num(base)} VP)")
+							elif disc:
+								lines.append(f" - {name}: {fmt_num(disc)} VP")
+							elif base:
+								lines.append(f" - {name}: {fmt_num(base)} VP")
+					return "\n".join(lines)
+
+				def copy_summary():
+					summary = build_summary_text()
+					QApplication.clipboard().setText(summary)
+					QToolTip.showText(QCursor.pos(), "Shop summary copied!")
+
+				copy_btn.clicked.connect(copy_summary)
 				refresh_btn.clicked.connect(on_refresh)
-				appbar_l.addWidget(wallet)
-				appbar_l.addWidget(theme_btn)
-				appbar_l.addWidget(refresh_btn)
+				appbar_l.addWidget(wallet, 0, Qt.AlignRight)
+				appbar_l.addWidget(controls, 0, Qt.AlignRight)
 				central_v.addWidget(appbar)
+
+				self.dynamic_timers: list[dict[str, Any]] = []
+
+				# Quick stats row
+				stats = QFrame()
+				stats.setObjectName("stats")
+				stats_l = QHBoxLayout(stats)
+				stats_l.setContentsMargins(20, 12, 20, 12)
+				stats_l.setSpacing(12)
+
+				def stat_card(title: str, value: str, detail: str) -> tuple[QFrame, QLabel, QLabel]:
+					card = QFrame()
+					card.setObjectName("statCard")
+					lay = QVBoxLayout(card)
+					lay.setContentsMargins(14, 10, 14, 10)
+					lay.setSpacing(2)
+					title_lbl = QLabel(title.upper())
+					title_lbl.setObjectName("statTitle")
+					value_lbl = QLabel(value)
+					value_lbl.setObjectName("statValue")
+					detail_lbl = QLabel(detail)
+					detail_lbl.setObjectName("statLabel")
+					lay.addWidget(title_lbl)
+					lay.addWidget(value_lbl)
+					lay.addWidget(detail_lbl)
+					return card, value_lbl, detail_lbl
+
+				def register_timer(label: QLabel, duration: int | None, formatter: Callable[[int], str]):
+					if duration is None:
+						return
+					try:
+						remaining = max(0, int(duration))
+					except Exception:
+						return
+					self.dynamic_timers.append(
+						{"label": label, "remaining": remaining, "formatter": formatter}
+					)
+
+				def _duration_text(value: int | None) -> str:
+					return format_duration(int(value)) if value else "Unknown"
+
+				daily_value = _duration_text(skin_duration or bundle_duration or 0)
+				daily_detail = f"{len(skin_names)} daily skins"
+				daily_card, daily_value_lbl, _daily_detail_lbl = stat_card("Daily reset", daily_value, daily_detail)
+				stats_l.addWidget(daily_card)
+				register_timer(daily_value_lbl, skin_duration or bundle_duration, _format_timer_value)
+
+				bundle_count = len(current_bundles)
+				bundle_value = f"{bundle_count} active"
+				if bundle_count:
+					bundle_detail = f"Rotation in {_duration_text(bundle_duration)}"
+				else:
+					bundle_detail = "No featured bundles"
+				bundle_card, _bundle_value_lbl, bundle_detail_lbl = stat_card("Bundles", bundle_value, bundle_detail)
+				stats_l.addWidget(bundle_card)
+				if bundle_count:
+					register_timer(
+						bundle_detail_lbl,
+						bundle_duration,
+						lambda secs: "Rotation in " + (_format_timer_value(secs) if secs > 0 else "ended"),
+					)
+
+				best_nm_pct = None
+				best_nm_idx = None
+				for idx, (base, disc) in enumerate(nm_prices):
+					if base and disc and base > disc:
+						pct = int(round((base - disc) / float(base) * 100))
+						if best_nm_pct is None or pct > best_nm_pct:
+							best_nm_pct = pct
+							best_nm_idx = idx
+				if best_nm_idx is not None and best_nm_pct is not None:
+					nm_value = f"-{best_nm_pct}%"
+					nm_detail = nm_offers[best_nm_idx]
+					if nm_duration:
+						nm_detail += f" - {_duration_text(nm_duration)} left"
+				elif nm_offers:
+					nm_value = "Open"
+					nm_detail = f"{len(nm_offers)} offers live"
+				else:
+					nm_value = "Closed"
+					nm_detail = "Night Market inactive"
+				nm_card, _nm_value_lbl, nm_detail_lbl = stat_card("Night Market", nm_value, nm_detail)
+				stats_l.addWidget(nm_card)
+				if best_nm_idx is not None and nm_duration:
+					register_timer(
+						nm_detail_lbl,
+						nm_duration,
+						lambda secs, prefix=nm_offers[best_nm_idx]: (
+							f"{prefix} - {_format_timer_value(secs)} left" if secs > 0 else f"{prefix} - expired"
+						),
+					)
+				stats_l.addStretch(1)
+				central_v.addWidget(stats)
 
 				# Scroll area content
 				scroll = QScrollArea()
@@ -1832,12 +1727,17 @@ class ValorantShopChecker:
 				scroll.setWidget(viewport)
 				central_v.addWidget(scroll, 1)
 
+				self.details_panel = BundleDetailsPanel()
+				self.details_panel.hide_panel()
+				central_v.addWidget(self.details_panel)
+
 				# Section helper
 				self.section_timers: list[tuple[QLabel, int]] = []
 
 				def add_section(title_text: str, subtitle_text: str | None,
 				                duration: int | None,
-				                min_w: int, max_cols: int) -> tuple[CardsGrid, QLabel | None]:
+				                min_w: int, max_cols: int,
+				                trailing_widget: QWidget | None = None) -> tuple[CardsGrid, QLabel | None]:
 					header = QWidget()
 					h = QHBoxLayout(header)
 					h.setContentsMargins(0, 0, 0, 0)
@@ -1858,6 +1758,8 @@ class ValorantShopChecker:
 						timer_lbl.setObjectName("timer")
 						h.addWidget(timer_lbl)
 						self.section_timers.append((timer_lbl, int(duration)))
+					if trailing_widget is not None:
+						h.addWidget(trailing_widget)
 					vbox.addWidget(header)
 					grid = CardsGrid(min_w=min_w, max_cols=max_cols)
 					vbox.addWidget(grid)
@@ -1873,6 +1775,56 @@ class ValorantShopChecker:
 					lay.setSpacing(6)
 					return c
 
+				def create_art_label(img_url: str, target_w: int, target_h: int, object_name: str) -> QLabel:
+					label = QLabel()
+					label.setObjectName(object_name)
+					label.setAlignment(Qt.AlignCenter)
+					label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+					label.setFixedHeight(target_h)
+					if target_w:
+						label.setMinimumWidth(min(target_w, 120))
+					pm = get_pixmap(img_url, target_w, target_h)
+					if pm:
+						label.setProperty("empty", False)
+						label.setPixmap(
+							pm.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+						)
+					else:
+						label.setText("Preview unavailable")
+						label.setProperty("empty", True)
+					return label
+
+				def build_rarity_badge(
+						rarity_info: tuple[str, str, str] | None,
+				) -> tuple[QFrame | None, str]:
+					if not rarity_info:
+						return None, ""
+					r_name, r_hex, r_icon = rarity_info
+					name = (r_name or "").strip()
+					if not name:
+						return None, ""
+					badge = QFrame()
+					badge.setObjectName("rarityBadge")
+					badge.setFixedHeight(26)
+					bg_color = _darken_hex(r_hex or ACCENT, 0.7)
+					badge.setStyleSheet(f"background-color: {bg_color}; border-radius: 13px;")
+					badge_l = QHBoxLayout(badge)
+					badge_l.setContentsMargins(10, 0, 10, 0)
+					badge_l.setSpacing(6)
+					if r_icon:
+						icon_pm = get_pixmap(r_icon, 16, 16)
+						if icon_pm:
+							icon_lbl = QLabel()
+							icon_lbl.setObjectName("rarityIcon")
+							icon_lbl.setPixmap(icon_pm)
+							icon_lbl.setFixedSize(16, 16)
+							icon_lbl.setAlignment(Qt.AlignCenter)
+							badge_l.addWidget(icon_lbl)
+					text_lbl = QLabel(name)
+					text_lbl.setObjectName("rarityText")
+					badge_l.addWidget(text_lbl)
+					return badge, name.lower()
+
 				# Bundles
 				if current_bundles:
 					g_b, _tb = add_section(
@@ -1886,11 +1838,8 @@ class ValorantShopChecker:
 							bundle_prices[i] if i < len(bundle_prices) else (0, 0)
 						)
 						card = make_card(440)
-						pm = get_pixmap(img_url, 420, 220)
-						if pm:
-							img = QLabel()
-							img.setPixmap(pm)
-							card.layout().addWidget(img)
+						img = create_art_label(img_url, 420, 220, "bundleArt")
+						card.layout().addWidget(img)
 						title_lbl = QLabel(name)
 						title_lbl.setObjectName("itemtitle")
 						card.layout().addWidget(title_lbl)
@@ -1912,82 +1861,78 @@ class ValorantShopChecker:
 						card.layout().addWidget(row)
 						card.setToolTip(f"{name}\nClick for contents")
 
-						def open_details(bid=b_uuid, nm=name):
-							items = bundle_items.get(bid) or []
-							dlg = QDialog(self)
-							dlg.setWindowTitle(f"Bundle · {nm}")
-							dlg.resize(560, 440)
-							lay = QVBoxLayout(dlg)
-							sc = QScrollArea()
-							sc.setWidgetResizable(True)
-							inner = QWidget()
-							iv = QVBoxLayout(inner)
-							iv.setContentsMargins(12, 12, 12, 12)
-							iv.setSpacing(8)
-							for item_name, item_img_url, _itype, item_cost in items:
-								roww = QFrame()
-								roww.setObjectName("card")
-								rlay = QHBoxLayout(roww)
-								rlay.setContentsMargins(10, 8, 10, 8)
-								rlay.setSpacing(8)
-								pmx = get_pixmap(item_img_url, 72, 72)
-								pic = QLabel()
-								if pmx:
-									pic.setPixmap(pmx)
-								info = QVBoxLayout()
-								name_lbl = QLabel(item_name)
-								cost_lbl = QLabel(f"{fmt_num(item_cost)} VP")
-								info.addWidget(name_lbl)
-								info.addWidget(cost_lbl)
-								rlay.addWidget(pic)
-								rlay.addLayout(info)
-								iv.addWidget(roww)
-							sc.setWidget(inner)
-							lay.addWidget(sc)
-							dlg.exec()
-
-						def _click(_e=None, f=open_details):
-							f()
+						def _click(_e=None, bid=b_uuid, nm=name, b_price=base, d_price=disc):
+							self.show_bundle_details(bid, nm, b_price, d_price)
 
 						card.mouseReleaseEvent = _click  # type: ignore
 						g_b.add_card(card)
 
 				# Daily offers
 				if skin_names:
-					g_s, _ts = add_section(
-						"Daily Offers", None, skin_duration or 0, 260, 5
+					filter_bar = QWidget()
+					filter_layout = QHBoxLayout(filter_bar)
+					filter_layout.setContentsMargins(0, 0, 0, 0)
+					filter_layout.setSpacing(6)
+					rarity_combo = QComboBox()
+					rarity_combo.setObjectName("rarityFilter")
+					rarity_combo.addItem("All rarities", None)
+					unique_rarities = sorted(
+						{(r[0] or "").strip() for r in skin_rarity if r and (r[0] or "").strip()}
 					)
+					for rarity_name in unique_rarities:
+						rarity_combo.addItem(rarity_name, rarity_name.lower())
+					search_box = QLineEdit()
+					search_box.setObjectName("search")
+					search_box.setPlaceholderText("Search skins or weapons...")
+					search_box.setClearButtonEnabled(True)
+					search_box.setMinimumWidth(200)
+					filter_layout.addWidget(rarity_combo)
+					filter_layout.addWidget(search_box)
+					g_s, _ts = add_section(
+						"Daily Offers", None, skin_duration or 0, 260, 5, trailing_widget=filter_bar
+					)
+					daily_cards_meta: list[tuple[QFrame, str, str]] = []
 					for i, (name, img_url) in enumerate(zip(skin_names, skin_images)):
 						price = skin_prices[i] if i < len(skin_prices) else 0
 						rarity = skin_rarity[i] if i < len(skin_rarity) else None
+						video_url = skin_videos[i] if i < len(skin_videos) else ""
 						card = make_card(260)
-						if rarity:
-							r_name, r_hex, r_icon = rarity
-							pill = QFrame()
-							pill.setObjectName("pill")
-							pl = QHBoxLayout(pill)
-							pl.setContentsMargins(6, 2, 6, 2)
-							pl.setSpacing(4)
-							if r_icon:
-								r_pix = get_pixmap(r_icon, 14, 14)
-								if r_pix:
-									ic = QLabel()
-									ic.setPixmap(r_pix)
-									pl.addWidget(ic)
-							pl.addWidget(QLabel(r_name or ""))
-							card.layout().addWidget(pill, 0)
-						pm = get_pixmap(img_url, 240, 120)
-						if pm:
-							img = QLabel()
-							img.setPixmap(pm)
-							card.layout().addWidget(img)
+						rarity_display = (rarity[0] or "").strip() if rarity else ""
+						badge, rarity_filter = build_rarity_badge(rarity)
+						if badge:
+							card.layout().addWidget(badge, 0)
+						img = create_art_label(img_url, 260, 140, "itemArt")
+						card.layout().addWidget(img)
 						title_lbl = QLabel(name)
 						title_lbl.setObjectName("itemtitle")
 						price_lbl = QLabel(f"{fmt_num(price)} VP")
+						price_lbl.setObjectName("priceLabel")
 						card.layout().addWidget(title_lbl)
 						card.layout().addWidget(price_lbl)
+						if video_url and video_url.startswith(("http://", "https://")):
+							preview_btn = QPushButton("Preview")
+							preview_btn.setObjectName("ghost")
+							preview_btn.clicked.connect(
+								lambda _checked=False, link=video_url: QDesktopServices.openUrl(QUrl(link))
+							)
+							card.layout().addWidget(preview_btn)
 						card.setToolTip(f"{name}\nPrice: {fmt_num(price)} VP")
+						meta_text = f"{name} {rarity_display}".strip().lower()
+						daily_cards_meta.append((card, meta_text, rarity_filter))
 						g_s.add_card(card)
+
+					def apply_daily_filters(_=None):
+						text = search_box.text().strip().lower()
+						selected_rarity = rarity_combo.currentData()
+						for widget, meta_text, rarity_value in daily_cards_meta:
+							match_text = not text or text in meta_text
+							match_rarity = not selected_rarity or rarity_value == selected_rarity
+							widget.setVisible(match_text and match_rarity)
+						g_s.relayout()
+
+					search_box.textChanged.connect(apply_daily_filters)
+					rarity_combo.currentIndexChanged.connect(apply_daily_filters)
+					apply_daily_filters()
 
 				# Night Market
 				if nm_offers:
@@ -2001,11 +1946,8 @@ class ValorantShopChecker:
 							nm_prices[i] if i < len(nm_prices) else (0, 0)
 						)
 						card = make_card(340)
-						pm = get_pixmap(img_url, 320, 150)
-						if pm:
-							img = QLabel()
-							img.setPixmap(pm)
-							card.layout().addWidget(img)
+						img = create_art_label(img_url, 320, 160, "nightArt")
+						card.layout().addWidget(img)
 						title_lbl = QLabel(name)
 						title_lbl.setObjectName("itemtitle")
 						row = QWidget()
@@ -2026,7 +1968,7 @@ class ValorantShopChecker:
 						card.layout().addWidget(title_lbl)
 						card.layout().addWidget(row)
 						card.setToolTip(
-							f"{name}\nWas {fmt_num(base)} · Now {fmt_num(disc)} VP"
+							f"{name}\nWas {fmt_num(base)} VP -> Now {fmt_num(disc)} VP"
 						)
 						g_nm.add_card(card)
 				else:
@@ -2045,15 +1987,15 @@ class ValorantShopChecker:
 				central_v.addWidget(foot)
 
 				# Style application
-				def apply_theme(dark: bool):
-					bg = DARK_BG if dark else LIGHT_BG
-					surf = DARK_SURFACE if dark else LIGHT_SURFACE
-					card_bg = DARK_CARD if dark else LIGHT_CARD
-					border = "#2C2F36" if dark else "#E6E8EF"
-					hover = "#2A2D33" if dark else "#F1F3F8"
-					chip = DARK_CARD if dark else LIGHT_CARD
-					fg = FG_LIGHT if dark else FG_DARK
-					sub = "#B0B6BD" if dark else "#5F6368"
+				def apply_theme():
+					bg = DARK_BG
+					surf = DARK_SURFACE
+					card_bg = DARK_CARD
+					border = "#2C2F36"
+					hover = "#2A2D33"
+					chip = DARK_CARD
+					fg = FG_LIGHT
+					sub = "#B0B6BD"
 					pct = ACCENT
 					ss = f"""
 					QMainWindow {{ background-color: {bg}; color: {fg}; }}
@@ -2072,33 +2014,91 @@ class ValorantShopChecker:
 						border-radius: 12px;
 					}}
 					QFrame#card:hover {{ background-color: {hover}; }}
+					QFrame#bundleDetails {{
+						background-color: {surf};
+						border-top: 1px solid {border};
+					}}
+					QFrame#detailRow {{
+						background-color: {card_bg};
+						border: 1px solid {border};
+						border-radius: 10px;
+					}}
+					QLabel#detailTitle {{ font: 600 13px 'Segoe UI'; color: {fg}; }}
+					QLabel#detailPrice {{ font: 600 12px 'Segoe UI'; color: {fg}; }}
+					QLabel#detailMeta {{ color: {sub}; font: 11px 'Segoe UI'; }}
+					QLabel#detailRarity {{ color: {pct}; font: 11px 'Segoe UI'; font-weight: 600; }}
 					QLabel#strike {{ color: #E06B74; }}
 					QLabel#pct    {{ color: {pct}; font-weight: 700; }}
 					QLabel#itemtitle {{ font: 600 12px 'Segoe UI'; }}
+					QFrame#stats {{ background-color: {surf}; border-bottom: 1px solid {border}; }}
+					QFrame#statCard {{
+						background-color: {card_bg};
+						border: 1px solid {border};
+						border-radius: 12px;
+					}}
+					QLabel#statTitle {{ color: {sub}; font: 600 10px 'Segoe UI'; letter-spacing: 0.08em; }}
+					QLabel#statValue {{ color: {fg}; font: 700 20px 'Segoe UI'; }}
+					QLabel#statLabel {{ color: {sub}; font: 11px 'Segoe UI'; }}
+					QFrame#rarityBadge {{
+						border-radius: 13px;
+						min-height: 26px;
+					}}
+					QLabel#rarityText {{
+						color: {FG_LIGHT};
+						font: 600 11px 'Segoe UI';
+					}}
+					QLabel#priceLabel {{
+						color: {fg};
+						font: 600 13px 'Segoe UI';
+					}}
+					QLabel#itemArt, QLabel#bundleArt, QLabel#nightArt {{
+						background-color: {surf};
+						border-radius: 12px;
+						padding: 6px;
+					}}
+					QLabel#itemArt[empty="true"],
+					QLabel#bundleArt[empty="true"],
+					QLabel#nightArt[empty="true"] {{
+						color: {sub};
+						font: italic 11px 'Segoe UI';
+					}}
+					QLineEdit#search {{
+						background-color: {card_bg};
+						border: 1px solid {border};
+						border-radius: 8px;
+						padding: 4px 8px;
+						color: {fg};
+						min-width: 200px;
+					}}
+					QComboBox#rarityFilter {{
+						background-color: {card_bg};
+						border: 1px solid {border};
+						border-radius: 8px;
+						padding: 2px 8px;
+						color: {fg};
+						min-width: 140px;
+					}}
+					QPushButton#ghost {{
+						border: 1px solid {border};
+						border-radius: 8px;
+						background: transparent;
+						color: {fg};
+						padding: 4px 10px;
+					}}
+					QPushButton#ghost:hover {{
+						border-color: {pct};
+						color: {pct};
+					}}
 					QPushButton {{ padding: 6px 12px; }}
 					"""
 					self.setStyleSheet(ss)
-					# Toggle theme icon
-					icon_url = (
-							"https://raw.githubusercontent.com/Saucywan/IconAssets/"
-							"71ca8de7336c6a03ad319cabd9580b8e83fe6e3c/"
-							+ ("sun.png" if dark else "moon.png")
-					)
-					pm = get_pixmap(icon_url, 18, 18)
-					if pm:
-						theme_btn.setIcon(QIcon(pm))
 
-				def toggle_theme():
-					self.dark = not self.dark
-					self_dark[0] = self.dark
-					apply_theme(self.dark)
-
-				theme_btn.clicked.connect(toggle_theme)
-				apply_theme(self.dark)
+				apply_theme()
 
 				# Timers
 				self.timer = QTimer(self)
 				self.timer.setInterval(1000)
+				self.timer.setTimerType(Qt.PreciseTimer)
 
 				def tick():
 					new_list: list[tuple[QLabel, int]] = []
@@ -2112,9 +2112,28 @@ class ValorantShopChecker:
 							lbl.setText("Expired")
 						new_list.append((lbl, remaining))
 					self.section_timers = new_list
+					for entry in self.dynamic_timers:
+						lbl = entry.get("label")
+						if lbl is None:
+							continue
+						remaining = entry.get("remaining", 0)
+						if remaining > 0:
+							remaining -= 1
+						try:
+							lbl.setText(entry["formatter"](max(remaining, 0)))
+						except Exception:
+							pass
+						entry["remaining"] = remaining
 
+				tick()
 				self.timer.timeout.connect(tick)
 				self.timer.start()
+
+			def show_bundle_details(self, bundle_id: str, bundle_name: str, base_price: int, discount_price: int):
+				if getattr(self, "details_panel", None) is None:
+					return
+				items = self.bundle_items.get(bundle_id) or []
+				self.details_panel.show_bundle(bundle_name, base_price, discount_price, items)
 
 			def closeEvent(self, event):  # noqa: N802
 				# In no-console mode, minimize to system tray instead of exiting
@@ -2138,13 +2157,10 @@ class ValorantShopChecker:
 					pass
 				return super().closeEvent(event)
 
-		# Persist dark mode across refresh within this session
-		self_dark = [bool(self.dark_mode)]
-
 		app = QApplication.instance() or QApplication(sys.argv)
 		win = ShopWindow()
 		# System tray (for no-console or general convenience)
-		if args.no_console:
+		if args.no_console or getattr(args, "_store_from_config", False):
 			try:
 				icon = QIcon("assets/Zoro.ico") if QIcon("assets/Zoro.ico").isNull() is False else QIcon()
 				tray = QSystemTrayIcon(icon, win)
@@ -2187,574 +2203,6 @@ class ValorantShopChecker:
 		app.exec()
 		if win.refresh_requested:
 			await self.run()
-
-	async def display_gui_tk_old(
-			self,
-			vp, vp_icon, rp, rp_icon, kc, kc_icon,
-			current_bundles, bundles_images, bundle_prices, bundle_duration, bundle_items,
-			skin_names, skin_images, skin_videos, skin_prices, skin_duration, skin_rarity,
-			nm_offers, nm_prices, nm_images, nm_duration
-	):
-		# -------------------- Theme Colors & Fonts --------------------
-		DARK_BG = "#151618"
-		LIGHT_BG = "#F6F7FB"
-		DARK_SURFACE = "#1E2023"
-		LIGHT_SURFACE = "#FFFFFF"
-		DARK_CARD_BG = "#212327"
-		LIGHT_CARD_BG = "#FFFFFF"
-		ACCENT_COLOR = "#FF4654"
-		TEXT_DARK = "#0F1113"
-		TEXT_LIGHT = "#FFFFFF"
-
-		TITLE_FONT = ("Segoe UI", 24, "bold")
-		SECTION_FONT = ("Segoe UI", 16, "bold")
-		SUBTITLE_FONT = ("Segoe UI", 10)
-		LABEL_FONT = ("Segoe UI", 11)
-		PRICE_FONT = ("Segoe UI", 12, "bold")
-		BUTTON_FONT = ("Segoe UI", 10, "bold")
-		TIMER_FONT = ("Segoe UI", 10, "italic")
-
-		def format_duration(seconds: int) -> str:
-			days = seconds // (24 * 3600)
-			seconds %= (24 * 3600)
-			hours = seconds // 3600
-			seconds %= 3600
-			minutes = seconds // 60
-			seconds %= 60
-			return f"{days}d {hours}h {minutes}m {seconds}s"
-
-		def fixed_resize(image, width: int, height: int):
-			ow, oh = image.size
-			ratio = min(width / ow, height / oh)
-			new_size = (int(ow * ratio), int(oh * ratio))
-			return image.resize(new_size, Image.Resampling.LANCZOS)
-
-		def _clamp(n: int) -> int:
-			return max(0, min(255, n))
-
-		def _hex_to_rgb(c: str):
-			c = (c or "").strip()
-			if c.startswith("#"):
-				c = c[1:]
-			if len(c) >= 6:
-				try:
-					return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
-				except Exception:
-					return (255, 255, 255)
-			return (255, 255, 255)
-
-		def _rgb_to_hex(rgb):
-			return "#%02x%02x%02x" % rgb
-
-		def lighten(color: str, factor: float = 0.12) -> str:
-			r, g, b = _hex_to_rgb(color)
-			lr = _clamp(int(r + (255 - r) * factor))
-			lg = _clamp(int(g + (255 - g) * factor))
-			lb = _clamp(int(b + (255 - b) * factor))
-			return _rgb_to_hex((lr, lg, lb))
-
-		def fmt_num(n) -> str:
-			try:
-				return f"{int(n):,}"
-			except Exception:
-				return str(n)
-
-		root = tkinter.Tk()
-		root.title("Zoro Shop")
-		root.minsize(1100, 740)
-		root.configure(bg=DARK_BG if self.dark_mode else LIGHT_BG)
-		style = ttk.Style()
-		style.theme_use("clam")
-
-		# Theme icons
-		sun_icon_url = (
-			"https://raw.githubusercontent.com/Saucywan/IconAssets/"
-			"71ca8de7336c6a03ad319cabd9580b8e83fe6e3c/sun.png"
-		)
-		moon_icon_url = (
-			"https://raw.githubusercontent.com/Saucywan/IconAssets/"
-			"71ca8de7336c6a03ad319cabd9580b8e83fe6e3c/moon.png"
-		)
-		sun_icon = moon_icon = None
-		for url in (sun_icon_url, moon_icon_url):
-			img = load_image(url, (20, 20))
-			if img:
-				if url == sun_icon_url:
-					sun_icon = ImageTk.PhotoImage(img)
-				else:
-					moon_icon = ImageTk.PhotoImage(img)
-
-		cards: list[tkinter.Frame] = []
-
-		def add_hover_effect(widget: tkinter.Widget, normal_bg: str, hover_bg: str) -> None:
-			def on_enter(_):
-				widget.configure(bg=hover_bg)
-				for child in widget.winfo_children():
-					try:
-						child.configure(bg=hover_bg)
-					except Exception:
-						pass
-
-			def on_leave(_):
-				new_bg = DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG
-				widget.configure(bg=new_bg)
-				for child in widget.winfo_children():
-					try:
-						child.configure(bg=new_bg)
-						if isinstance(child, tkinter.Label):
-							child.configure(fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK)
-					except Exception:
-						pass
-
-			widget.bind("<Enter>", on_enter)
-			widget.bind("<Leave>", on_leave)
-
-		appbar: tkinter.Frame | None = None
-		theme_btn: ttk.Button | None = None
-		content_outer: tkinter.Frame | None = None
-
-		def apply_theme() -> None:
-			bg = DARK_BG if self.dark_mode else LIGHT_BG
-			surf = DARK_SURFACE if self.dark_mode else LIGHT_SURFACE
-			fg = TEXT_LIGHT if self.dark_mode else TEXT_DARK
-			root.configure(bg=bg)
-			style.configure("TFrame", background=bg)
-			style.configure("TLabel", background=bg, foreground=fg, font=LABEL_FONT)
-			style.configure("Title.TLabel", background=bg, foreground=fg, font=TITLE_FONT)
-			style.configure("Section.TLabel", background=bg, foreground=fg, font=SECTION_FONT)
-			style.configure("Subtle.TLabel", background=bg, foreground="#9AA0A6", font=SUBTITLE_FONT)
-			style.configure("TButton", font=BUTTON_FONT)
-			if appbar is not None:
-				appbar.configure(bg=surf)
-				for child in appbar.winfo_children():
-					try:
-						child.configure(bg=surf)
-					except Exception:
-						pass
-			if content_outer is not None:
-				content_outer.configure(bg=bg)
-			new_card_bg = DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG
-			for c in cards:
-				c.configure(bg=new_card_bg)
-				for child in c.winfo_children():
-					try:
-						child.configure(bg=new_card_bg)
-						if isinstance(child, tkinter.Label):
-							child.configure(fg=fg)
-					except Exception:
-						pass
-			if theme_btn is not None and sun_icon and moon_icon:
-				theme_btn.config(image=(sun_icon if self.dark_mode else moon_icon))
-				theme_btn.image = sun_icon if self.dark_mode else moon_icon
-
-		def switch_theme() -> None:
-			self.dark_mode = not self.dark_mode
-			apply_theme()
-
-		# App bar
-		appbar = tkinter.Frame(root, bd=0)
-		appbar.pack(fill="x")
-		accent = tkinter.Frame(appbar, width=6, bg=ACCENT_COLOR)
-		accent.pack(side="left", fill="y")
-		left = tkinter.Frame(appbar)
-		left.pack(side="left", fill="x", expand=True, padx=16, pady=12)
-		ttk.Label(left, text="Zoro Shop", style="Title.TLabel").pack(anchor="w")
-		ttk.Label(left, text="Featured bundles, daily offers, and Night Market",
-		          style="Subtle.TLabel").pack(anchor="w")
-		right = tkinter.Frame(appbar)
-		right.pack(side="right", padx=16, pady=12)
-
-		def create_points_badge(parent, icon_url: str, amount: int, label_text: str):
-			badge_bg = DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG
-			wrap = tkinter.Frame(parent, bg=badge_bg, bd=0)
-			wrap.pack(side="left", padx=6)
-			inner = tkinter.Frame(wrap, bg=badge_bg)
-			inner.pack(padx=10, pady=6)
-			try:
-				icon_img = load_image(icon_url, (18, 18))
-				if icon_img:
-					photo = ImageTk.PhotoImage(icon_img)
-					lbl_icon = tkinter.Label(inner, image=photo, bg=badge_bg)
-					lbl_icon.image = photo
-					lbl_icon.pack(side="left", padx=(0, 6))
-				else:
-					raise Exception("No image")
-			except Exception:
-				tkinter.Label(inner, text="?", width=2, bg=badge_bg,
-				              fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(side="left")
-			tkinter.Label(inner, text=fmt_num(amount), font=("Segoe UI", 11, "bold"),
-			              fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK, bg=badge_bg).pack(side="left")
-			ToolTip(wrap, text=f"{label_text}: {fmt_num(amount)}")
-			cards.append(wrap)
-			return wrap
-
-		async def refresh():
-			try:
-				btn_refresh.config(text="Refreshing...", state="disabled")
-				await self.run()
-			except Exception:
-				pass
-			finally:
-				btn_refresh.config(text="Refresh", state="normal")
-
-		btn_refresh = ttk.Button(right, text="Refresh", command=lambda: asyncio.run(refresh()))
-		btn_refresh.pack(side="right", padx=(8, 0))
-		theme_btn = ttk.Button(right, command=switch_theme)
-		theme_btn.pack(side="right")
-		wallet = tkinter.Frame(right)
-		wallet.pack(side="right", padx=(0, 12))
-		create_points_badge(wallet, vp_icon, vp, "Valorant Points")
-		create_points_badge(wallet, rp_icon, rp, "Radianite Points")
-		create_points_badge(wallet, kc_icon, kc, "Kingdom Credits")
-
-		# Scrollable content
-		content_outer = tkinter.Frame(root, bg=DARK_BG if self.dark_mode else LIGHT_BG)
-		content_outer.pack(fill="both", expand=True)
-		canvas = tkinter.Canvas(content_outer, highlightthickness=0,
-		                        bg=DARK_BG if self.dark_mode else LIGHT_BG)
-		vscroll = ttk.Scrollbar(content_outer, orient="vertical", command=canvas.yview)
-		content = tkinter.Frame(canvas, bg=DARK_BG if self.dark_mode else LIGHT_BG)
-		cid = canvas.create_window((0, 0), window=content, anchor="nw")
-		canvas.configure(yscrollcommand=vscroll.set)
-		canvas.pack(side="left", fill="both", expand=True)
-		vscroll.pack(side="right", fill="y")
-
-		def _on_cfg(_):
-			canvas.configure(scrollregion=canvas.bbox("all"))
-			canvas.itemconfig(cid, width=canvas.winfo_width())
-
-		content.bind("<Configure>", _on_cfg)
-
-		# Details popup
-		def show_bundle_details(bundle_uuid: str, bundle_name: str) -> None:
-			items = bundle_items.get(bundle_uuid)
-			if not items:
-				messagebox.showerror("Error", "No details available for this bundle.")
-				return
-			win = tkinter.Toplevel(root)
-			win.title(f"Bundle · {bundle_name}")
-			win.minsize(520, 420)
-			wrap = tkinter.Frame(win, bg=DARK_SURFACE if self.dark_mode else LIGHT_SURFACE)
-			wrap.pack(fill="both", expand=True)
-			sc = tkinter.Canvas(wrap, highlightthickness=0,
-			                    bg=DARK_SURFACE if self.dark_mode else LIGHT_SURFACE)
-			vs = ttk.Scrollbar(wrap, orient="vertical", command=sc.yview)
-			inner = tkinter.Frame(sc, bg=DARK_SURFACE if self.dark_mode else LIGHT_SURFACE)
-			sc_id = sc.create_window((0, 0), window=inner, anchor="nw")
-			sc.configure(yscrollcommand=vs.set)
-			sc.pack(side="left", fill="both", expand=True)
-			vs.pack(side="right", fill="y")
-
-			def _sizing(_):
-				sc.configure(scrollregion=sc.bbox("all"))
-				sc.itemconfig(sc_id, width=sc.winfo_width())
-
-			inner.bind("<Configure>", _sizing)
-
-			for item_name, item_img_url, item_type, item_cost in items:
-				row = tkinter.Frame(inner, bg=DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG)
-				row.pack(fill="x", padx=16, pady=8)
-				try:
-					img = load_image(item_img_url, (72, 72))
-					if img:
-						p = ImageTk.PhotoImage(img)
-						pic = tkinter.Label(row, image=p, bg=row["bg"])
-						pic.image = p
-						pic.pack(side="left", padx=(8, 12), pady=8)
-				except Exception:
-					pass
-				info = tkinter.Frame(row, bg=row["bg"])
-				info.pack(side="left", fill="x", expand=True)
-				tkinter.Label(info, text=item_name, font=("Segoe UI", 11, "bold"),
-				              bg=row["bg"], fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
-				tkinter.Label(info, text=f"{fmt_num(item_cost)} VP", font=("Segoe UI", 10),
-				              bg=row["bg"], fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
-
-		def make_card(parent: tkinter.Misc, *, width: int = 280) -> tkinter.Frame:
-			bg = DARK_CARD_BG if self.dark_mode else LIGHT_CARD_BG
-			f = tkinter.Frame(parent, bg=bg)
-			f.configure(highlightthickness=1, highlightbackground="#2C2F36" if self.dark_mode else "#E6E8EF")
-			cards.append(f)
-			add_hover_effect(f, bg, lighten(bg, 0.05))
-			return f
-
-		def add_section(title: str, subtitle: str | None, *, duration: int | None):
-			section = tkinter.Frame(content, bg=root["bg"])
-			section.pack(fill="x", padx=20, pady=(18, 6))
-			hdr = tkinter.Frame(section, bg=root["bg"])
-			hdr.pack(fill="x", pady=(2, 8))
-			ttk.Label(hdr, text=title, style="Section.TLabel").pack(side="left")
-			if subtitle:
-				ttk.Label(hdr, text=subtitle, style="Subtle.TLabel").pack(side="left", padx=(10, 0))
-			timer_lbl = None
-			if duration is not None:
-				timer_lbl = tkinter.Label(
-					hdr,
-					text=f"Expires in: {format_duration(duration)}",
-					font=TIMER_FONT,
-					bg=root["bg"],
-					fg="#B0B6BD" if self.dark_mode else "#5F6368",
-				)
-				timer_lbl.pack(side="right")
-			grid = tkinter.Frame(section, bg=root["bg"])  # grid container
-			grid.pack(fill="x")
-			return grid, timer_lbl
-
-		# Bundles
-		bundles_grid = None
-		bundles_timer_label = None
-		total_bundles_duration = bundle_duration or 0
-		if current_bundles:
-			bundles_grid, bundles_timer_label = add_section(
-				"Featured Bundles", "Limited time offers", duration=total_bundles_duration
-			)
-			bundle_cards: list[tkinter.Frame] = []
-
-			def layout_bundles(_=None):
-				w = max(bundles_grid.winfo_width(), 1)
-				min_w = 440
-				pad = 20
-				cols = max(1, min(3, w // (min_w + pad)))
-				for i in range(cols):
-					bundles_grid.grid_columnconfigure(i, weight=1)
-				for i, c in enumerate(bundle_cards):
-					r = i // cols
-					col = i % cols
-					c.grid(row=r, column=col, padx=10, pady=10, sticky="nsew")
-
-			for i, (name_uuid, img_url) in enumerate(zip(current_bundles, bundles_images)):
-				name, b_uuid = name_uuid
-				base, disc = bundle_prices[i] if i < len(bundle_prices) else (0, 0)
-				c = make_card(bundles_grid, width=440)
-				try:
-					im = load_image(img_url)
-					if im:
-						im = fixed_resize(im, 420, 220)
-						p = ImageTk.PhotoImage(im)
-						lbl = tkinter.Label(c, image=p, bg=c["bg"])
-						lbl.image = p
-						lbl.pack(padx=10, pady=(10, 6))
-				except Exception:
-					pass
-				info = tkinter.Frame(c, bg=c["bg"])  # name + price
-				info.pack(fill="x", padx=14, pady=(0, 12))
-				tkinter.Label(info, text=name, font=("Segoe UI", 12, "bold"),
-				              bg=c["bg"], fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
-				pr = tkinter.Frame(info, bg=c["bg"])  # price row
-				pr.pack(anchor="w", pady=(4, 0))
-				tkinter.Label(pr, text=f"{fmt_num(base)} VP", font=("Segoe UI", 10, "overstrike"),
-				              bg=c["bg"], fg="#E06B74").pack(side="left")
-				tkinter.Label(pr, text=f"  {fmt_num(disc)} VP", font=PRICE_FONT,
-				              bg=c["bg"], fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(side="left")
-				try:
-					if base and disc and base > disc:
-						pct = int(round((base - disc) / float(base) * 100))
-						tkinter.Label(pr, text=f"  -{pct}%", font=("Segoe UI", 10, "bold"),
-						              bg=c["bg"], fg=ACCENT_COLOR).pack(side="left")
-				except Exception:
-					pass
-
-				def _open_details(_e=None, bid=b_uuid, nm=name):
-					show_bundle_details(bid, nm)
-
-				c.bind("<Button-1>", _open_details)
-				for kid in c.winfo_children():
-					kid.bind("<Button-1>", _open_details)
-				ToolTip(c, text=f"{name}\nClick for contents")
-				bundle_cards.append(c)
-			bundles_grid.bind("<Configure>", layout_bundles)
-			root.after(50, layout_bundles)
-
-		# Daily offers
-		skins_grid = None
-		skins_timer_label = None
-		total_skins_duration = skin_duration or 0
-		if skin_names:
-			skins_grid, skins_timer_label = add_section("Daily Offers", None, duration=total_skins_duration)
-			skin_cards: list[tkinter.Frame] = []
-
-			def layout_skins(_=None):
-				w = max(skins_grid.winfo_width(), 1)
-				min_w = 260
-				pad = 20
-				cols = max(1, min(5, w // (min_w + pad)))
-				for i in range(cols):
-					skins_grid.grid_columnconfigure(i, weight=1)
-				for i, c in enumerate(skin_cards):
-					r = i // cols
-					col = i % cols
-					c.grid(row=r, column=col, padx=10, pady=10, sticky="nsew")
-
-			for i, (name, img_url) in enumerate(zip(skin_names, skin_images)):
-				c = make_card(skins_grid, width=260)
-				rarity = skin_rarity[i] if i < len(skin_rarity) else None
-				price = skin_prices[i] if i < len(skin_prices) else 0
-				if rarity:
-					r_name, r_hex, r_icon = rarity
-					if r_hex and len(r_hex) != 6:
-						r_hex = "#" + r_hex[:-2]
-					pill = tkinter.Frame(c, bg=("#" + r_hex[-6:] if r_hex else ACCENT_COLOR))
-					pill.pack(anchor="ne", padx=6, pady=6)
-					try:
-						if r_icon:
-							ri = load_image(r_icon, (14, 14))
-							if ri:
-								rp = ImageTk.PhotoImage(ri)
-								tkinter.Label(pill, image=rp, bg=pill["bg"]).pack(side="left", padx=(4, 2))
-								pill.image = rp
-					except Exception:
-						pass
-					tkinter.Label(pill, text=r_name or "", font=("Segoe UI", 8, "bold"),
-					              bg=pill["bg"], fg="white").pack(side="left", padx=(0, 4))
-				try:
-					im = load_image(img_url)
-					if im:
-						im = fixed_resize(im, 240, 120)
-						p = ImageTk.PhotoImage(im)
-						lbl = tkinter.Label(c, image=p, bg=c["bg"])
-						lbl.image = p
-						lbl.pack(padx=10, pady=(10, 6))
-				except Exception:
-					pass
-				info = tkinter.Frame(c, bg=c["bg"])  # name + price
-				info.pack(fill="x", padx=12, pady=(0, 10))
-				tkinter.Label(info, text=name, font=("Segoe UI", 11, "bold"),
-				              bg=c["bg"], fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
-				tkinter.Label(info, text=f"{fmt_num(price)} VP", font=PRICE_FONT,
-				              bg=c["bg"], fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w", pady=(4, 0))
-				ToolTip(c, text=f"{name}\nPrice: {fmt_num(price)} VP")
-				skin_cards.append(c)
-			skins_grid.bind("<Configure>", layout_skins)
-			root.after(50, layout_skins)
-
-		# Night Market
-		nm_grid = None
-		nm_timer_label = None
-		total_nm_duration = nm_duration or 0
-		if nm_offers:
-			nm_grid, nm_timer_label = add_section("Night Market", "Discounted offers",
-			                                      duration=total_nm_duration)
-			nm_cards: list[tkinter.Frame] = []
-
-			def layout_nm(_=None):
-				w = max(nm_grid.winfo_width(), 1)
-				min_w = 340
-				pad = 20
-				cols = max(1, min(4, w // (min_w + pad)))
-				for i in range(cols):
-					nm_grid.grid_columnconfigure(i, weight=1)
-				for i, c in enumerate(nm_cards):
-					r = i // cols
-					col = i % cols
-					c.grid(row=r, column=col, padx=10, pady=10, sticky="nsew")
-
-			for i, name in enumerate(nm_offers):
-				img_url = nm_images[i] if i < len(nm_images) else ""
-				base, disc = nm_prices[i] if i < len(nm_prices) else (0, 0)
-				c = make_card(nm_grid, width=340)
-				try:
-					im = load_image(img_url)
-					if im:
-						im = fixed_resize(im, 320, 150)
-						p = ImageTk.PhotoImage(im)
-						lbl = tkinter.Label(c, image=p, bg=c["bg"])
-						lbl.image = p
-						lbl.pack(padx=10, pady=(10, 6))
-				except Exception:
-					pass
-				info = tkinter.Frame(c, bg=c["bg"])  # name + price
-				info.pack(fill="x", padx=12, pady=(0, 12))
-				tkinter.Label(info, text=name, font=("Segoe UI", 11, "bold"),
-				              bg=c["bg"], fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(anchor="w")
-				row = tkinter.Frame(info, bg=c["bg"])  # price row
-				row.pack(anchor="w", pady=(4, 0))
-				tkinter.Label(row, text=f"{fmt_num(base)} VP", font=("Segoe UI", 10, "overstrike"),
-				              bg=c["bg"], fg="#E06B74").pack(side="left")
-				tkinter.Label(row, text=f"  {fmt_num(disc)} VP", font=PRICE_FONT,
-				              bg=c["bg"], fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK).pack(side="left")
-				try:
-					if base and disc and base > disc:
-						pct = int(round((base - disc) / float(base) * 100))
-						tkinter.Label(row, text=f"  -{pct}%", font=("Segoe UI", 10, "bold"),
-						              bg=c["bg"], fg=ACCENT_COLOR).pack(side="left")
-				except Exception:
-					pass
-				ToolTip(c, text=f"{name}\nWas {fmt_num(base)} · Now {fmt_num(disc)} VP")
-				nm_cards.append(c)
-			nm_grid.bind("<Configure>", layout_nm)
-			root.after(50, layout_nm)
-		else:
-			grid, _lbl = add_section("Night Market", None, duration=None)
-			tkinter.Label(grid, text="Night Market is currently not available.",
-			              font=LABEL_FONT, bg=root["bg"],
-			              fg="#B0B6BD" if self.dark_mode else "#5F6368").pack(pady=20)
-
-		# Footer
-		status_bg = DARK_SURFACE if self.dark_mode else LIGHT_SURFACE
-		status = tkinter.Frame(root, bg=status_bg)
-		status.pack(side="bottom", fill="x")
-		stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-		tkinter.Label(status, text=f"Last updated: {stamp}", bg=status_bg,
-		              fg=TEXT_LIGHT if self.dark_mode else TEXT_DARK,
-		              font=("Segoe UI", 9)).pack(side="right", padx=12, pady=6)
-
-		# Apply theme and shortcuts
-		apply_theme()
-		root.bind("t", lambda _e: switch_theme())
-		root.bind("T", lambda _e: switch_theme())
-		root.bind("r", lambda _e: asyncio.run(refresh()))
-		root.bind("R", lambda _e: asyncio.run(refresh()))
-
-		# Timers
-		remaining_bundle = (bundle_duration or 0)
-		remaining_skin = (skin_duration or 0)
-		remaining_nm = (nm_duration or 0)
-		after_id = None
-
-		def update_timers():
-			nonlocal remaining_bundle, remaining_skin, remaining_nm, after_id
-			if not root.winfo_exists():
-				return
-			try:
-				if current_bundles and 'bundles_timer_label' in locals() and bundles_timer_label:
-					if remaining_bundle > 0:
-						remaining_bundle -= 1
-						bundles_timer_label.config(
-							text=f"Expires in: {format_duration(remaining_bundle)}"
-						)
-					else:
-						bundles_timer_label.config(text="Expired")
-				if skin_names and 'skins_timer_label' in locals() and skins_timer_label:
-					if remaining_skin > 0:
-						remaining_skin -= 1
-						skins_timer_label.config(
-							text=f"Expires in: {format_duration(remaining_skin)}"
-						)
-					else:
-						skins_timer_label.config(text="Expired")
-				if nm_offers and 'nm_timer_label' in locals() and nm_timer_label:
-					if remaining_nm > 0:
-						remaining_nm -= 1
-						nm_timer_label.config(
-							text=f"Expires in: {format_duration(remaining_nm)}"
-						)
-					else:
-						nm_timer_label.config(text="Expired")
-			except tkinter.TclError:
-				return
-			after_id = root.after(1000, update_timers)
-
-		def on_closing():
-			if after_id is not None:
-				try:
-					root.after_cancel(after_id)
-				except tkinter.TclError:
-					pass
-			root.destroy()
-
-		root.protocol("WM_DELETE_WINDOW", on_closing)
-		update_timers()
-		root.mainloop()
 
 
 class NotificationManager:
@@ -3355,6 +2803,68 @@ def calculate_kd(kills: int, deaths: int) -> float | int:
 	return round(kills / deaths, 2)
 
 
+def _coerce_stat_number(value: Any) -> float | None:
+	"""Attempt to convert a stat value into a float."""
+	if isinstance(value, (int, float)):
+		return float(value)
+	if isinstance(value, str):
+		normalized = value.strip()
+		if not normalized:
+			return None
+		if normalized.endswith("%"):
+			normalized = normalized[:-1]
+		try:
+			return float(normalized)
+		except ValueError:
+			return None
+	return None
+
+
+def _format_stat_placeholder(value: Any) -> str:
+	"""Return a safe fallback string for stats that cannot be colored."""
+	if isinstance(value, str):
+		normalized = value.strip()
+		return normalized if normalized else "--"
+	return "--"
+
+
+def _colorize_stat_value(
+		value: Any,
+		*,
+		good_threshold: float,
+		decimals: int,
+		suffix: str = "",
+		min_valid: float | None = None,
+) -> str:
+	"""Format a numeric stat with red/green coloring based on the threshold."""
+	numeric_value = _coerce_stat_number(value)
+	if numeric_value is None:
+		return _format_stat_placeholder(value)
+	if min_valid is not None and numeric_value < min_valid:
+		return _format_stat_placeholder("--")
+
+	if decimals <= 0:
+		display_value = str(int(round(numeric_value)))
+	else:
+		display_value = str(round(numeric_value, decimals))
+
+	display_value = f"{display_value}{suffix}"
+	color = "green" if numeric_value >= good_threshold else "red"
+	return f"[{color}]{display_value}[/{color}]"
+
+
+def colorize_kd_stat(value: Any) -> str:
+	return _colorize_stat_value(value, good_threshold=0.90, decimals=2, min_valid=0.0)
+
+
+def colorize_headshot_stat(value: Any) -> str:
+	return _colorize_stat_value(value, good_threshold=20.0, decimals=0, suffix="%", min_valid=0.0)
+
+
+def colorize_score_stat(value: Any) -> str:
+	return _colorize_stat_value(value, good_threshold=50.0, decimals=0, min_valid=0.0)
+
+
 class ConfigValidationError(ValueError):
 	"""Raised when a configuration value cannot be parsed or validated."""
 
@@ -3629,7 +3139,7 @@ def build_main_config_manager(
 				),
 				ConfigOption(
 					key="use_discord_rich_presence",
-					default=False,
+					default=True,
 					value_type="bool",
 					description=(
 						"Enable Discord Rich Presence integration.",
@@ -3643,16 +3153,6 @@ def build_main_config_manager(
 					value_type="bool",
 					description=(
 						"Enable beta features for advanced missing agent detection in pregame.",
-						"Default = false.",
-					),
-				),
-				ConfigOption(
-					key="enable_debug_logging",
-					default=False,
-					value_type="bool",
-					description=(
-						"Print extra diagnostic details to the console and logs.",
-						"Useful when troubleshooting requests or API responses.",
 						"Default = false.",
 					),
 				),
@@ -3684,7 +3184,7 @@ def build_main_config_manager(
 
 def refresh_runtime_preferences(config_main: configparser.SectionProxy) -> bool:
 	"""Synchronize runtime globals from the configuration."""
-	global DEFAULT_MENU_ACTION, SETUP_COMPLETED, DEBUG
+	global DEFAULT_MENU_ACTION, SETUP_COMPLETED, DEBUG, STORE_ONLY_MODE
 	default_action = config_main.get("default_menu_action", "manual").strip().lower()
 	if default_action not in VALID_MENU_ACTIONS:
 		default_action = "manual"
@@ -3692,9 +3192,41 @@ def refresh_runtime_preferences(config_main: configparser.SectionProxy) -> bool:
 	DEFAULT_MENU_ACTION = default_action
 	SETUP_COMPLETED = config_main.get("setup_completed", "false").strip().lower() == "true"
 	debug_enabled = config_main.get("enable_debug_logging", "false").strip().lower() == "true"
+	STORE_ONLY_MODE = config_main.get("start_in_store_mode", "false").strip().lower() == "true"
 	if not CLI_DEBUG_OVERRIDE:
 		DEBUG = debug_enabled
 	return debug_enabled
+
+
+def _apply_store_mode_override() -> None:
+	"""Force store-only CLI behaviour when configured to auto-launch the shop."""
+	if "args" not in globals():
+		return
+	try:
+		current = getattr(args, "store", False)
+		if STORE_ONLY_MODE:
+			setattr(args, "store", True)
+			setattr(args, "_store_from_config", True)
+		else:
+			setattr(args, "store", current)
+			if hasattr(args, "_store_from_config"):
+				delattr(args, "_store_from_config")
+	except Exception:
+		pass
+
+
+def _print_setup_step(
+		step_number: int, total_steps: int, title: str, description: Sequence[str] | str
+) -> None:
+	"""Render a consistent Rich panel for each setup step."""
+	body = description if isinstance(description, str) else "\n".join(description)
+	console.print(
+		Panel.fit(
+			body,
+			title=f"Step {step_number}/{total_steps} | {title}",
+			border_style="cyan",
+		)
+	)
 
 
 def run_setup_wizard(
@@ -3718,7 +3250,11 @@ def run_setup_wizard(
 		)
 	)
 	console.print(
-		"[bright_white]This wizard configures core behaviour and stores your preferences in config.ini.[/bright_white]"
+		Panel.fit(
+			"This wizard configures core behaviour and stores your preferences in config.ini.",
+			border_style="blue",
+			title="What to Expect",
+		)
 	)
 
 	if not _prompt_bool("Do you understand and accept this disclaimer?", default=False):
@@ -3726,13 +3262,33 @@ def run_setup_wizard(
 
 	config_main = config_parser["Main"]
 
+	console.rule("[bold cyan]Preferences[/bold cyan]")
+	console.print(
+		"[bright_white]Answer the prompts below. Press enter to keep the suggested value in brackets.[/bright_white]"
+	)
+	total_steps = 7
+	step_counter = 1
+
+	def _bool_label(value: bool) -> str:
+		return "Enabled" if value else "Disabled"
+
 	current_match_count = int(config_main.get("amount_of_matches_for_player_stats", "10"))
+	_print_setup_step(
+		step_counter,
+		total_steps,
+		"Player statistics window",
+		[
+			f"Current: {current_match_count} matches",
+			"Increasing this smooths stats but reacts slower to changes.",
+		],
+	)
 	match_count = _prompt_int(
 		"How many matches should be aggregated for player statistics?",
 		default=current_match_count,
 		minimum=1,
 		maximum=20,
 	)
+	step_counter += 1
 
 	current_mode_setting = config_main.get("stats_used_game_mode", "ALL").strip()
 	default_mode_key = current_mode_setting.lower()
@@ -3741,6 +3297,16 @@ def run_setup_wizard(
 	mode_choices = {"all": "All queues", "same": "Matchmaking queue"}
 	for code, label in sorted(game_modes.items()):
 		mode_choices[code] = label
+	mode_display = mode_choices.get(default_mode_key, current_mode_setting.upper())
+	_print_setup_step(
+		step_counter,
+		total_steps,
+		"Queue focus for statistics",
+		[
+			f"Current: {mode_display}",
+			"Choose ALL for every match or SAME to follow the active queue.",
+		],
+	)
 	selected_mode = _prompt_choice(
 		"Which queue should player statistics use?",
 		mode_choices,
@@ -3752,18 +3318,49 @@ def run_setup_wizard(
 		config_main["stats_used_game_mode"] = "SAME"
 	else:
 		config_main["stats_used_game_mode"] = selected_mode
+	step_counter += 1
 
 	use_rpc_default = config_main.get("use_discord_rich_presence", "false").strip().lower() == "true"
+	_print_setup_step(
+		step_counter,
+		total_steps,
+		"Discord Rich Presence",
+		[
+			f"Current: {_bool_label(use_rpc_default)}",
+			"Publish your Valorant Zoro activity to your Discord profile.",
+		],
+	)
 	use_rpc = _prompt_bool("Enable Discord Rich Presence?", default=use_rpc_default)
+	step_counter += 1
 
 	advanced_default = config_main.get("advanced_missing_agents", "false").strip().lower() == "true"
+	_print_setup_step(
+		step_counter,
+		total_steps,
+		"Advanced missing agent detection",
+		[
+			f"Current: {_bool_label(advanced_default)}",
+			"Beta feature that highlights agents missing in pregame.",
+		],
+	)
 	advanced_agents = _prompt_bool(
 		"Enable advanced missing agent detection (beta)?",
 		default=advanced_default,
 	)
+	step_counter += 1
 
 	debug_default = config_main.get("enable_debug_logging", "false").strip().lower() == "true"
+	_print_setup_step(
+		step_counter,
+		total_steps,
+		"Verbose debug logging",
+		[
+			f"Current: {_bool_label(debug_default)}",
+			"Helpful when troubleshooting API calls or support investigations.",
+		],
+	)
 	debug_logging = _prompt_bool("Enable verbose debug logging?", default=debug_default)
+	step_counter += 1
 
 	menu_choices = {
 		"manual": "Choose every time",
@@ -3773,11 +3370,21 @@ def run_setup_wizard(
 	default_menu = config_main.get("default_menu_action", "manual").strip().lower()
 	if default_menu not in menu_choices:
 		default_menu = "manual"
+	_print_setup_step(
+		step_counter,
+		total_steps,
+		"Idle action after login",
+		[
+			f"Current: {menu_choices[default_menu]}",
+			"Pick what the client should do when you reach the main menu.",
+		],
+	)
 	selected_menu_action = _prompt_choice(
 		"What should happen after login when idle?",
 		menu_choices,
 		default_menu,
 	)
+	step_counter += 1
 
 	config_main["amount_of_matches_for_player_stats"] = str(match_count)
 	config_main["advanced_missing_agents"] = "true" if advanced_agents else "false"
@@ -3788,10 +3395,28 @@ def run_setup_wizard(
 
 	config_manager.save(config_parser)
 	refresh_runtime_preferences(config_main)
+	_apply_store_mode_override()
 
+	mode_summary_label = mode_choices.get(selected_mode, selected_mode.upper())
+	summary_table = Table(
+		title="Saved Preferences",
+		box=box.SIMPLE_HEAD,
+		show_header=True,
+		header_style="bold",
+	)
+	summary_table.add_column("Setting", style="cyan", no_wrap=True)
+	summary_table.add_column("Value", style="bright_white")
+	summary_table.add_row("Player stats matches", str(match_count))
+	summary_table.add_row("Stats queue", mode_summary_label)
+	summary_table.add_row("Discord Rich Presence", _bool_label(use_rpc))
+	summary_table.add_row("Advanced missing agents", _bool_label(advanced_agents))
+	summary_table.add_row("Debug logging", _bool_label(debug_logging))
+	summary_table.add_row("Idle action", menu_choices[selected_menu_action])
+
+	console.print(summary_table)
 	console.print(
 		Panel(
-			"Setup complete! You can re-run this wizard anytime with the --setup flag or from the main menu.",
+			"Setup complete! Review the summary above. Re-run this wizard anytime with the --setup flag or from the main menu.",
 			style="bold green",
 		)
 	)
@@ -4139,12 +3764,28 @@ def get_match_details(match_id: str, platform: str = "PC"):
 			return None
 
 
+def _build_match_history_query(gamemode: str | None) -> tuple[str, str]:
+	"""
+	Compute the match-history query suffix and human-readable queue filter label.
+	"""
+	stats_used_game_mode = config_main.get("stats_used_game_mode", "ALL").lower()
+	search = ""
+	if stats_used_game_mode != "all":
+		if stats_used_game_mode == "same" and gamemode is not None:
+			search = f"&queue={gamemode}"
+		elif stats_used_game_mode != "same":
+			search = f"&queue={stats_used_game_mode}"
+
+	queue_filter = search.split("=")[-1] if search else "all"
+	return search, queue_filter
+
+
 def get_player_data_from_uuid(user_id: str, cache: dict | None, platform: str = "PC", gamemode: str = None):
 	global PLAYER_STATS_CACHE, PLAYER_STATS_PARTY_CACHE, PLAYER_STATS_CACHE_EXPIRY
 
 	user_id = str(user_id)
 	if cache is None:
-		cache = PLAYER_STATS_CACHE
+		cache = PLAYER_STATS_CACHE.copy()
 
 	def _store_cache(
 			stats_entry: PlayerStatsTuple,
@@ -4196,17 +3837,11 @@ def get_player_data_from_uuid(user_id: str, cache: dict | None, platform: str = 
 	search = ""
 
 	try:
-		stats_used_game_mode = config_main.get("stats_used_game_mode", "ALL").lower()
-		if stats_used_game_mode != "all":
-			if stats_used_game_mode == "same" and gamemode is not None:
-				search = f"&queue={gamemode}"
-			elif stats_used_game_mode != "same":
-				search = f"&queue={stats_used_game_mode}"
+		search, queue_filter = _build_match_history_query(gamemode)
 
 		headers = internal_api_headers if platform == "PC" else internal_api_headers_console
 		url = f"https://pd.na.a.pvp.net/match-history/v1/history/{user_id}?endIndex={int(config_main.get('amount_of_matches_for_player_stats', '10'))}{search}"
 
-		queue_filter = search.split("=")[-1] if search else "all"
 		log_debug_event(
 			"player_stats_fetch_start",
 			"Fetching recent match history for player stats",
@@ -4226,8 +3861,9 @@ def get_player_data_from_uuid(user_id: str, cache: dict | None, platform: str = 
 			)
 
 		save_match_data = None
+		match_scores: list[float] = []
 		for history_entry in history:
-			time.sleep(3)  # TODO | Remove someday
+			# time.sleep(3)
 			match_id = history_entry["MatchID"]
 			match_data = get_match_details(match_id, platform)
 
@@ -4235,7 +3871,6 @@ def get_player_data_from_uuid(user_id: str, cache: dict | None, platform: str = 
 				continue  # Skip if match data couldn't be retrieved
 
 			player_data = match_data.get("players", [])
-			player_score: list[float] = []
 			performance = ValorantPerformanceScorer()
 			for match in player_data:
 				if str(match["subject"]) == user_id:
@@ -4256,14 +3891,15 @@ def get_player_data_from_uuid(user_id: str, cache: dict | None, platform: str = 
 					deaths += match["stats"]["deaths"]
 
 					performance.prepare(match_data)
-					player_score.append(performance.score_player(user_id)[0])
+					score = performance.score_player(user_id)[0]
+					match_scores.append(score)
 
-			avg_score = sum(player_score) / len(player_score) if player_score else 0
 			headshot_data = get_headshot_percent(match_data)
 			user_headshot = headshot_data.get(user_id)
 			if user_headshot is not None:
 				headshot.append(round(user_headshot))
 
+		avg_score = sum(match_scores) / len(match_scores) if match_scores else 0
 		avg_headshot = sum(headshot) / len(headshot) if headshot else 0
 
 		kd_ratio = calculate_kd(kills, deaths)
@@ -4294,6 +3930,284 @@ def get_player_data_from_uuid(user_id: str, cache: dict | None, platform: str = 
 		)
 
 
+def _resolve_queue_name(queue_id: str | None) -> str:
+	if not queue_id:
+		return "Unknown"
+	queue_key = str(queue_id).lower()
+	if queue_key == "null":
+		return "Unknown"
+	return GAME_MODES.get(queue_key, str(queue_id).capitalize())
+
+
+def _coerce_datetime_from_millis(epoch_ms: Any) -> datetime | None:
+	try:
+		return datetime.fromtimestamp(int(epoch_ms) / 1000)
+	except (TypeError, ValueError, OSError):
+		return None
+
+
+def _relative_time_label(event_at: datetime | None) -> str:
+	if event_at is None:
+		return "--"
+	diff = datetime.now() - event_at
+	if diff < timedelta(minutes=1):
+		return "just now"
+	if diff < timedelta(hours=1):
+		minutes = int(diff.total_seconds() // 60)
+		return f"{minutes}m ago"
+	if diff < timedelta(days=1):
+		hours = int(diff.total_seconds() // 3600)
+		return f"{hours}h ago"
+	days = diff.days
+	return f"{days}d ago"
+
+
+def _determine_match_result(teams: Sequence[Mapping[str, Any]], player_team: str | None) -> tuple[str, int, int]:
+	result = "Unknown"
+	team_rounds = 0
+	opp_rounds = 0
+
+	for team in teams:
+		rounds = int(team.get("roundsWon", 0))
+		if player_team and team.get("teamId") == player_team:
+			team_rounds = rounds
+			if team.get("won") is True:
+				result = "Win"
+			elif team.get("won") is False:
+				result = "Loss"
+		else:
+			opp_rounds = rounds
+
+	if result == "Unknown" and team_rounds == opp_rounds and team_rounds > 0:
+		result = "Draw"
+	return result, team_rounds, opp_rounds
+
+
+def _build_zoro_entry_from_match(player_id: str, match_data: dict[str, Any], match_id: str) -> ZoroScoreEntry | None:
+	player_entry = next((p for p in match_data.get("players", []) if str(p.get("subject")) == player_id), None)
+	if player_entry is None:
+		return None
+
+	scorer = ValorantPerformanceScorer()
+	scorer.prepare(match_data)
+	score, breakdown = scorer.score_player(player_id, explain=True)
+
+	stats = player_entry.get("stats", {})
+	kills = int(stats.get("kills", 0))
+	deaths = int(stats.get("deaths", 0))
+	kd_ratio = calculate_kd(kills, deaths)
+
+	map_name = get_mapdata_from_id(match_data.get("matchInfo", {}).get("mapId", "")) or "Unknown"
+	queue_name = _resolve_queue_name(match_data.get("matchInfo", {}).get("queueID"))
+	agent_name = get_agent_data_from_id(player_entry.get("characterId", "")) or "Unknown"
+
+	teams = match_data.get("teams", [])
+	result, team_rounds, opp_rounds = _determine_match_result(teams, player_entry.get("teamId"))
+	rounds_played = match_data.get("matchInfo", {}).get("roundCount")
+	if rounds_played is None and teams:
+		rounds_played = sum(int(team.get("roundsWon", 0)) for team in teams)
+	if rounds_played is None:
+		rounds_played = 0
+
+	headshot_percent = get_headshot_percent(match_data).get(player_id)
+
+	started_at = _coerce_datetime_from_millis(match_data.get("matchInfo", {}).get("gameStartMillis"))
+
+	return ZoroScoreEntry(
+		match_id=str(match_id),
+		started_at=started_at,
+		map_name=map_name,
+		queue_name=queue_name,
+		agent_name=agent_name,
+		result=result,
+		team_rounds=team_rounds,
+		opponent_rounds=opp_rounds,
+		rounds_played=int(rounds_played),
+		kills=kills,
+		deaths=deaths,
+		kd_ratio=kd_ratio,
+		headshot_percent=headshot_percent,
+		score=round(score, 2),
+		breakdown=breakdown or {},
+	)
+
+
+def build_zoro_score_entries(
+		player_id: str,
+		*,
+		platform: str = "PC",
+		match_limit: int | None = None,
+		gamemode: str | None = None,
+) -> list[ZoroScoreEntry]:
+	if match_limit is None:
+		try:
+			match_limit = int(config_main.get("scorecard_match_limit", "5"))
+		except (TypeError, ValueError):
+			match_limit = 5
+
+	match_limit = max(1, min(match_limit, 10))
+	query_suffix, queue_filter = _build_match_history_query(gamemode)
+	headers = internal_api_headers if platform.upper() == "PC" else internal_api_headers_console
+	url = f"https://pd.na.a.pvp.net/match-history/v1/history/{player_id}?endIndex={match_limit}{query_suffix}"
+
+	log_debug_event(
+		"zoro_scorecard_fetch_begin",
+		"Fetching Zoro scorecard entries",
+		player_id=player_id,
+		limit=match_limit,
+		queue_filter=queue_filter,
+		platform=platform,
+	)
+
+	response = api_request("GET", url, headers=headers)
+	if response.status_code != 200:
+		logger.log(2, f"Failed to fetch scorecard history for {player_id}: {response.status_code}")
+		return []
+
+	history = response.json().get("History", [])
+	entries: list[ZoroScoreEntry] = []
+	for history_entry in history[:match_limit]:
+		match_id = history_entry.get("MatchID")
+		if not match_id:
+			continue
+		match_data = get_match_details(match_id, platform)
+		if not match_data:
+			continue
+		entry = _build_zoro_entry_from_match(str(player_id), match_data, match_id)
+		if entry:
+			entries.append(entry)
+
+	log_debug_event(
+		"zoro_scorecard_fetch_complete",
+		"Fetched scorecard entries",
+		player_id=player_id,
+		entry_count=len(entries),
+	)
+	return entries
+
+
+def _summarize_component_details(component: Mapping[str, Any]) -> str:
+	parts: list[str] = []
+	for key, value in component.items():
+		if key in {"score", "weight"}:
+			continue
+		if isinstance(value, float):
+			parts.append(f"{key}={round(value, 2)}")
+		else:
+			parts.append(f"{key}={value}")
+	return ", ".join(parts) if parts else "--"
+
+
+def _render_breakdown_panel(entry: ZoroScoreEntry, index: int) -> Panel:
+	breakdown = entry.breakdown or {}
+	components = breakdown.get("components", {})
+
+	component_table = Table(show_header=True, header_style="bold cyan", box=None, expand=True)
+	component_table.add_column("Component", style="magenta")
+	component_table.add_column("Score", style="green")
+	component_table.add_column("Weight", style="cyan")
+	component_table.add_column("Details", style="white")
+
+	if components:
+		for name, data in components.items():
+			weight_value = data.get("weight", 0)
+			try:
+				weight_text = str(round(float(weight_value), 2))
+			except (TypeError, ValueError):
+				weight_text = "--"
+			component_table.add_row(
+				name.title(),
+				str(data.get("score", "--")),
+				weight_text,
+				_summarize_component_details(data),
+			)
+	else:
+		component_table.add_row("--", "--", "--", "No breakdown data.")
+
+	meta_line = Text(
+		f"Base {breakdown.get('base_score', '--')}  •  Penalty {breakdown.get('penalty', '--')}",
+		style="dim",
+	)
+
+	return Panel(
+		Group(meta_line, component_table),
+		title=f"Match {index} breakdown — {entry.map_name}",
+		border_style="grey50",
+	)
+
+
+def render_zoro_scorecard(
+		player_label: str,
+		entries: Sequence[ZoroScoreEntry],
+		*,
+		show_breakdown: bool = False,
+) -> Panel:
+	title = f"{player_label} — Zoro scorecard"
+	if not entries:
+		return Panel(
+			"[dim]No recent matches available for this player.[/dim]",
+			title=title,
+			border_style="magenta",
+		)
+
+	table = Table(
+		show_header=True,
+		header_style="bold magenta",
+		title=None,
+		expand=True,
+	)
+	table.add_column("#", justify="center", style="dim", width=3)
+	table.add_column("When", justify="center")
+	table.add_column("Result", justify="center")
+	table.add_column("Score", justify="center")
+	table.add_column("Agent", justify="center")
+	table.add_column("K/D", justify="center")
+	table.add_column("HS%", justify="center")
+	table.add_column("Map / Queue", justify="left")
+
+	for idx, entry in enumerate(entries, start=1):
+		if entry.result == "Win":
+			result_color = "green"
+		elif entry.result == "Loss":
+			result_color = "red"
+		else:
+			result_color = "yellow"
+		result_text = f"[{result_color}]{entry.result} {entry.team_rounds}-{entry.opponent_rounds}[/{result_color}]"
+		score_text = colorize_score_stat(entry.score)
+		kd_text = colorize_kd_stat(entry.kd_ratio)
+		if entry.headshot_percent is None:
+			hs_text = "--"
+		else:
+			hs_text = colorize_headshot_stat(entry.headshot_percent)
+		when_text = "--" if entry.started_at is None else f"{entry.started_at.strftime('%b %d %H:%M')} ({_relative_time_label(entry.started_at)})"
+		map_text = f"{entry.map_name} ({entry.queue_name})"
+
+		table.add_row(
+			str(idx),
+			when_text,
+			result_text,
+			score_text,
+			entry.agent_name,
+			kd_text,
+			hs_text,
+			map_text,
+		)
+
+	body: Sequence[Any]
+	if show_breakdown:
+		breakdown_panels = [_render_breakdown_panel(entry, idx) for idx, entry in enumerate(entries, start=1)]
+		body = (table, *breakdown_panels)
+	else:
+		body = (table,)
+
+	return Panel(
+		Group(*body),
+		title=title,
+		border_style="magenta",
+		padding=(0, 1),
+	)
+
+
 def get_rank_color(rank: str, use_rich_markup: bool = False):
 	"""Return colored text for a rank, with Radiant being multicolored."""
 	if not use_rich_markup:
@@ -4307,8 +4221,8 @@ def get_rank_color(rank: str, use_rich_markup: bool = False):
 			"Diamond": "\033[35m",  # Magenta
 			"Ascendant": "\033[38;5;82m",  # Bright Green
 			"Immortal": f"\033[31m",  # Red
-			"Radiant": "\033[38;5;196mR\033[38;5;202ma\033[38;5;226md\033[38;5;82mi\033[36ma\033[38;5;33mn\033[38;5;201mt"
-			# Rainbow (Multi-Colored)
+			"Radiant": "\033[38;5;220mR\033[38;5;229ma\033[38;5;231md\033[38;5;229mi\033[38;5;220ma\033[38;5;221mn\033[38;5;229mt"
+			# Gold-to-white gradient to mimic the in-game badge
 		}
 
 		RESET = "\033[0m"  # Reset color to default
@@ -4338,9 +4252,9 @@ def get_rank_color(rank: str, use_rich_markup: bool = False):
 
 		rank_cap = rank.capitalize()
 
-		# Handle "Radiant" with multicolor effect
+		# Handle "Radiant" with a multicolor effect
 		if "Radiant" in rank_cap:
-			return "[#ff0000]R[/][#ff7f00]a[/][#ffff00]d[/][#00ff00]i[/][#0000ff]a[/][#4b0082]n[/][#8f00ff]t[/]"
+			return "[#f2c94c]R[/][#ffe39c]a[/][#fff8df]d[/][#ffe39c]i[/][#f2c94c]a[/][#edb949]n[/][#fff2c2]t[/]"
 
 		# For other ranks, loop through the dictionary
 		for rank_name, color in RANK_COLORS.items():
@@ -4491,7 +4405,7 @@ async def match_report(match_id: str):
 	"""
 	log_debug_event("match_report_poll_begin", "Waiting for post-game data", match_id=match_id)
 	poll_attempts = 0
-	# Poll every 5 seconds until match data is available.
+	# Poll every 2.5 seconds until match data is available.
 	while True:
 		response = api_request("GET", f"https://pd.na.a.pvp.net/match-details/v1/matches/{match_id}",
 		                       headers=internal_api_headers)
@@ -4499,7 +4413,7 @@ async def match_report(match_id: str):
 		if response.status_code == 200:
 			match_data = response.json()
 			break
-		await asyncio.sleep(5)
+		await asyncio.sleep(2.5)
 
 	player_ids = [player.get("subject") for player in match_data.get("players", [])]
 	invalidate_player_stats_cache(player_ids, reason=f"match_completed:{match_id}")
@@ -4610,7 +4524,7 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 			details=f"Loading...",
 			large_image="valorant",
 			large_text="Valorant Zoro",
-			party_size=[1, 5],
+			party_size=[party_size, 5],
 			start=int(time.time()),
 		)
 
@@ -4666,7 +4580,7 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 						details=f"{map_name} | {mode_name.capitalize()} | {host_player_agent.capitalize() if host_player_agent is not None else ''}",
 						large_image="valorant",
 						large_text="Valorant Zoro",
-						party_size=[1, 5],
+						party_size=[party_size, 5],
 					)
 
 				# Build a header string
@@ -4724,31 +4638,10 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 					count += 1
 
 				def format_kd_value(value: Any) -> str:
-					if value is None:
-						return "--"
-					if isinstance(value, (int, float)):
-						if value < 0:
-							return "--"
-						return f"{value:.2f}"
-					if isinstance(value, str):
-						return value if value not in ("", "-") else "--"
-					return "--"
+					return colorize_kd_stat(value)
 
 				def format_hs_value(value: Any) -> str:
-					if value is None:
-						return "--"
-					if isinstance(value, (int, float)):
-						if value < 0:
-							return "--"
-						return f"{int(round(value))}%"
-					if isinstance(value, str):
-						normalized = value.strip()
-						if normalized in ("", "-", "--"):
-							return "--"
-						if normalized.lower() == "loading":
-							return "Loading"
-						return normalized if normalized.endswith("%") else f"{normalized}%"
-					return "--"
+					return colorize_headshot_stat(value)
 
 				def format_recent_matches(value: Any) -> str:
 					if isinstance(value, list):
@@ -5071,7 +4964,7 @@ async def run_pregame(data: dict):
 			details="Loading...",
 			large_image="valorant",
 			large_text="Valorant Zoro",
-			party_size=[1, 5],
+			party_size=[party_size, 5],
 			start=int(time.time()),
 		)
 
@@ -5109,7 +5002,7 @@ async def run_pregame(data: dict):
 						state="In Agent Select",
 						details=f"{map_name} | {mode_name.capitalize()}",
 						start=int(time.time()),
-						party_size=[1, 5],
+						party_size=[party_size, 5],
 					)
 
 				got_map_and_gamemode = True
@@ -5149,7 +5042,7 @@ async def run_pregame(data: dict):
 							RPC.update(
 								state="In Agent Select",
 								details=f"{map_name} | {mode_name.capitalize()} | ({'H' if state.lower() == 'selected' else 'L'}) {agent_name.capitalize()}",
-								party_size=[1, 5],
+								party_size=[party_size, 5],
 							)
 				except Exception:
 					agent_name = "None"
@@ -5204,7 +5097,10 @@ async def run_pregame(data: dict):
 
 				kd, wins, avg, score = cache.get(str(ally_player["PlayerIdentity"]["Subject"]),
 				                                 ("Loading", "-", "Loading", "-"))
-				buffer.write(f"[magenta]  Player KD: {kd} | Headshot: {avg}% | Score: {score}[/magenta]\n")
+				kd_display = colorize_kd_stat(kd)
+				headshot_display = colorize_headshot_stat(avg)
+				score_display = colorize_score_stat(score)
+				buffer.write(f"  Player KD: {kd_display} | Headshot: {headshot_display} | Score: {score_display}\n")
 				buffer.write(f"[bright_magenta]  Past Matches: {''.join(wins)}[/bright_magenta]\n\n")
 
 			# -------------------------------------------------------
@@ -5331,6 +5227,154 @@ def quit_game():
 				            headers=internal_api_headers)
 
 
+def _parse_scorecard_command(command_text: str) -> tuple[list[str], bool, int | None]:
+	tokens = command_text.split()
+	if not tokens:
+		return ["self"], False, None
+
+	selectors: list[str] = []
+	show_breakdown = False
+	match_limit: int | None = None
+	idx = 1  # Skip the command keyword
+	while idx < len(tokens):
+		token = tokens[idx]
+		if token in {"-d", "--detail", "--details"}:
+			show_breakdown = True
+		elif token.startswith("--limit="):
+			value = token.split("=", 1)[1]
+			try:
+				match_limit = int(value)
+			except ValueError:
+				pass
+		elif token in {"-l", "--limit"}:
+			idx += 1
+			if idx < len(tokens):
+				value = tokens[idx]
+				try:
+					match_limit = int(value)
+				except ValueError:
+					pass
+		else:
+			selectors.append(token)
+		idx += 1
+
+	if not selectors:
+		selectors = ["self"]
+	return selectors, show_breakdown, match_limit
+
+
+async def _build_scorecard_roster(party_id: str | None) -> list[dict[str, Any]]:
+	roster: list[dict[str, Any]] = []
+	party_data: dict[str, Any] | None = None
+	if party_id:
+		try:
+			party_data = await fetch_party_data(party_id)
+		except Exception as exc:
+			logger.log(2, f"Failed to fetch party data for scorecard: {exc}")
+
+	if party_data:
+		for member in party_data.get("Members", []):
+			player_id = str(member.get("Subject"))
+			if not player_id:
+				continue
+			player_name, _ = get_userdata_from_id(player_id, val_uuid)
+			platform_type = str(member.get("PlatformInfo", {}).get("platformType", "PC")).upper()
+			platform = "PC" if platform_type == "PC" else "CONSOLE"
+			roster.append({
+				"id": player_id,
+				"label": player_name,
+				"platform": platform,
+				"is_self": player_id == str(val_uuid),
+			})
+
+	if not roster:
+		player_name, _ = get_userdata_from_id(str(val_uuid), val_uuid)
+		roster.append({
+			"id": str(val_uuid),
+			"label": player_name,
+			"platform": "PC",
+			"is_self": True,
+		})
+	return roster
+
+
+def _resolve_scorecard_targets(selectors: Sequence[str], roster: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+	normalized = [sel.strip() for sel in selectors if sel.strip()]
+	if not normalized:
+		normalized = ["self"]
+
+	if any(sel in {"all", "party"} for sel in normalized):
+		return list(roster)
+
+	resolved: list[dict[str, Any]] = []
+	seen: set[str] = set()
+
+	def _add(member: dict[str, Any]) -> None:
+		player_id = member.get("id")
+		if player_id and player_id not in seen:
+			seen.add(player_id)
+			resolved.append(member)
+
+	for selector in normalized:
+		if selector in {"self", "me"}:
+			for member in roster:
+				if member.get("is_self"):
+					_add(member)
+			continue
+
+		if selector.isdigit():
+			index = int(selector) - 1
+			if 0 <= index < len(roster):
+				_add(roster[index])
+			continue
+
+		for member in roster:
+			label = member.get("label", "").lower()
+			if selector in label:
+				_add(member)
+
+	if not resolved:
+		for member in roster:
+			if member.get("is_self"):
+				_add(member)
+				break
+	return resolved
+
+
+async def handle_scorecard_command(user_input: str, party_id: str | None) -> None:
+	selectors, show_breakdown, match_limit = _parse_scorecard_command(user_input)
+	roster = await _build_scorecard_roster(party_id)
+	targets = _resolve_scorecard_targets(selectors, roster)
+
+	if not targets:
+		console.print("[red]No players available for scorecards.[/red]")
+		return
+
+	log_debug_event(
+		"zoro_scorecard_command",
+		"Rendering Zoro scorecards",
+		target_count=len(targets),
+		show_breakdown=show_breakdown,
+		match_limit=match_limit,
+	)
+
+	console.print("[cyan]Fetching Zoro scorecards...[/cyan]")
+
+	for target in targets:
+		try:
+			entries = await asyncio.to_thread(
+				build_zoro_score_entries,
+				target["id"],
+				platform=target.get("platform", "PC"),
+				match_limit=match_limit,
+			)
+		except Exception as exc:
+			logger.log(2, f"Failed to build scorecard for {target.get('id')}: {exc}")
+			entries = []
+		console.print(
+			render_zoro_scorecard(target.get("label", "Unknown Player"), entries, show_breakdown=show_breakdown))
+
+
 async def listen_for_input(party_id: str):
 	is_ready = True  # Start with the default ready state
 	console.print("Enter a command: ")
@@ -5339,6 +5383,14 @@ async def listen_for_input(party_id: str):
 		try:
 			user_input = await asyncio.to_thread(input, "> ")  # Non-blocking input
 			user_input: str = user_input.strip().lower()
+
+			if not user_input:
+				continue
+
+			command_root = user_input.split()[0]
+			if command_root in SCORECARD_COMMANDS:
+				await handle_scorecard_command(user_input, party_id)
+				continue
 
 			if user_input == "r":
 				is_ready = not is_ready
@@ -5368,6 +5420,11 @@ async def listen_for_input(party_id: str):
 				table.add_row("r", "Toggle Ready State", end_section=True)
 				table.add_row("clear/cls", "Clear Console", end_section=True)
 				table.add_row("party", "Show Party Details", end_section=True)
+				table.add_row(
+					"score [player|all] [--limit N] [--detail]",
+					"Show recent Zoro scores (supports names, indexes, or 'all').",
+					end_section=True,
+				)
 				table.add_row("store", "Open Valorant Store Interface", end_section=True)
 				table.add_row("quit/leave", "Quit Current Game", end_section=True)
 				table.add_row("friends/f", "Show Friend States", end_section=True)
@@ -5421,15 +5478,12 @@ async def get_friend_states() -> list[str]:
 
 async def get_party(got_rank: dict = None):
 	"""Fetch and display party details in Valorant."""
-	global input_task
+	global input_task, party_size
 	buffer = StringIO()
 	last_rendered_content = ""
 	input_task = None  # Task for input handling
 	got_rank = got_rank or {}
-	player_stats_cache = PLAYER_STATS_CACHE
 	prefetch_tasks: dict[str, asyncio.Task] = {}
-
-	party_size = 1
 
 	logger.log(3, "Loading Party... ")
 
@@ -5439,7 +5493,7 @@ async def get_party(got_rank: dict = None):
 			details="Valorant Match Tracker",
 			large_image="valorant",
 			large_text="Valorant Zoro",
-			party_size=[1, 5],
+			party_size=[party_size, 5],
 			start=int(time.time()),
 		)
 
@@ -5470,8 +5524,16 @@ async def get_party(got_rank: dict = None):
 				party_data = await fetch_party_data(party_id)
 				party_size = len(party_data["Members"])
 				for player_id, task in list(prefetch_tasks.items()):
-					if task.done():
-						await prefetch_tasks.pop(player_id, None)
+					if not task.done():
+						continue
+
+					prefetch_tasks.pop(player_id, None)
+					try:
+						task.result()
+					except asyncio.CancelledError:
+						continue
+					except Exception as exc:
+						logger.log(2, f"Prefetch stats task failed for {player_id}: {exc}")
 
 				if input_task is None or input_task.done():
 					input_task = asyncio.create_task(listen_for_input(party_id))
@@ -5493,21 +5555,18 @@ async def get_party(got_rank: dict = None):
 					return f"[cyan]LVL {lv}[/cyan]"
 
 				def _score_markup(player_id: str) -> str:
-					stats = player_stats_cache.get(player_id)
+					stats = PLAYER_STATS_CACHE.get(player_id)
 					if stats is None:
 						if player_id in prefetch_tasks:
 							return "[yellow]Loading[/yellow]"
 						return "[dim]--[/dim]"
 					score_value = stats[3]
-					try:
-						score_float = float(score_value)
-					except (TypeError, ValueError):
-						if isinstance(score_value, str) and score_value.strip():
-							return score_value
+					score_markup = colorize_score_stat(score_value)
+					if score_markup.strip().lower() == "loading":
+						return "[yellow]Loading[/yellow]"
+					if score_markup == "--":
 						return "[dim]--[/dim]"
-					if score_float < 0:
-						return "[dim]--[/dim]"
-					return f"[magenta]{int(round(score_float))}[/magenta]"
+					return score_markup
 
 				def _schedule_prefetch(member: dict[str, Any]) -> None:
 					player_id = str(member.get("Subject", ""))
@@ -5515,7 +5574,7 @@ async def get_party(got_rank: dict = None):
 						return
 
 					expiry_at = PLAYER_STATS_CACHE_EXPIRY.get(player_id, 0)
-					if player_id in player_stats_cache and expiry_at > time.time():
+					if player_id in PLAYER_STATS_CACHE and expiry_at > time.time():
 						return
 
 					task = prefetch_tasks.get(player_id)
@@ -5530,14 +5589,14 @@ async def get_party(got_rank: dict = None):
 						def _prefetch_sync() -> None:
 							try:
 								with request_semaphore:
-									get_player_data_from_uuid(player_id, player_stats_cache, platform)
+									get_player_data_from_uuid(player_id, PLAYER_STATS_CACHE, platform)
 							except Exception as exc:
 								logger.log(2, f"Failed to prefetch stats for {player_id}: {exc}")
 
 						try:
 							await asyncio.to_thread(_prefetch_sync)
 						finally:
-							await prefetch_tasks.pop(player_id, None)
+							prefetch_tasks.pop(player_id, None)  # noqa
 
 					prefetch_tasks[player_id] = asyncio.create_task(_prefetch_async())
 
@@ -5740,6 +5799,10 @@ async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 	if send_message:
 		console.print("\n\nChecking if player is in match")
 
+	state_manager = OFFLINE_STATE_MANAGER if OFFLINE_MODE else None
+	if state_manager is not None:
+		state_manager.grant_replay()
+
 	state = get_user_current_state(val_uuid)
 	if state == 3:
 		try:
@@ -5753,6 +5816,8 @@ async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 					logger.log(3, "Loading check_pregame -> pregame")
 					Notification.clear_notifications()
 					await run_pregame(data)
+					if state_manager is not None:
+						state_manager.exhaust()
 					return True
 			elif r.status_code == 400:
 				logger.log(3, "Loading check_pregame -> log_in")
@@ -5774,6 +5839,8 @@ async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 				logger.log(3, "Loading check_pregame -> in_game")
 				Notification.clear_notifications()
 				await run_in_game()
+				if state_manager is not None:
+					state_manager.exhaust()
 				return True
 			elif return_code == 400:
 				logger.log(3, "Loading check_pregame -> log_in")
@@ -5944,10 +6011,11 @@ async def main() -> bool:
 		if args.store:
 			shop = ValorantShopChecker()
 			clear_console()
+			if getattr(args, "_store_from_config", False):
+				console.print("[bold cyan]Launching Valorant Shop (configured auto-start).[/bold cyan]")
+				hide_console()
 			console.print(f"[bold red]STORE ONLY MODE...[/bold red]\nUse system tray to exit.")
 			await with_spinner("Loading Store...", shop.run())
-			if args.no_console:
-				sys.exit(0)
 
 		state: Optional[int] = None
 
@@ -5956,6 +6024,10 @@ async def main() -> bool:
 		while True:
 			try:
 				await display_logged_in_status(name)
+
+				# Kill input thread
+				if input_task is not None:
+					input_task.cancel()
 
 				# Fetch and display friend states dynamically
 				friend_states = await get_friend_states()
@@ -5979,6 +6051,7 @@ async def main() -> bool:
 								run_setup_wizard(CONFIG_MANAGER, CONFIG, game_modes=GAME_MODES)
 								config_main = CONFIG["Main"]
 								refresh_runtime_preferences(config_main)
+								_apply_store_mode_override()
 								logger.info(
 									"Interactive setup wizard re-run from menu",
 									context={"default_menu_action": DEFAULT_MENU_ACTION},
@@ -6102,15 +6175,22 @@ if __name__ == "__main__":
 	                    help="Launch directly into the Valorant store interface")
 	args = parser.parse_args()
 
+	instance_guard = SingleInstanceGuard("ValorantZoroClient")
+	if not instance_guard.acquire():
+		console.print(Panel("Another Zoro session is already running.", style="bold red"))
+		time.sleep(2.5)
+		sys.exit(1)
+	atexit.register(instance_guard.release)
+
 	# Set console title
 	console.set_window_title(f"Zoro {VERSION}")
 
 	if args.version:
-		console.print(f"Valorant Zoro Version: {VERSION}")
+		console.print(f"Zoro Version: {VERSION}")
 		sys.exit(0)
 
 	if args.no_console:
-		# Hide the actual console window; can be restored from system tray
+		# Hide the actual console window; can be restored from the system tray
 		hide_console()
 
 	CLI_DEBUG_OVERRIDE = args.debug
@@ -6139,6 +6219,7 @@ if __name__ == "__main__":
 	CONFIG = config
 
 	debug_from_config = refresh_runtime_preferences(config_main)
+	_apply_store_mode_override()
 	if CLI_DEBUG_OVERRIDE:
 		DEBUG = True
 
@@ -6151,6 +6232,7 @@ if __name__ == "__main__":
 			console.print(Panel(str(exc), style="bold red"))
 			sys.exit(1)
 		debug_from_config = refresh_runtime_preferences(config_main)
+		_apply_store_mode_override()
 		if CLI_DEBUG_OVERRIDE:
 			DEBUG = True
 
