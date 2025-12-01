@@ -459,26 +459,28 @@ def ensure_installation(
 	payload_exists = has_existing_payload(install_dir)
 
 	needs_install = force_install or local_version is None or not payload_exists
-	remote_digest = asset.get("digest")
-	if (
-			not needs_install
-			and remote_digest
-			and installed_digest
-			and not digests_equal(remote_digest, installed_digest)
-	):
-		print(
-			"[launcher] Remote release hash differs from installed build; reinstalling to ensure integrity."
-		)
-		needs_install = True
-	elif not needs_install and remote_digest and not installed_digest:
-		print(
-			"[launcher] Installed build lacks checksum metadata; reinstalling to capture official digest."
-		)
-		needs_install = True
 
 	if not needs_install and version_key(remote_version) <= version_key(local_version):
 		print(f"[launcher] Local version {local_version} is up to date.")
-		return local_version, remote_version
+
+		remote_digest = asset.get("digest")
+		if (
+				not needs_install
+				and remote_digest
+				and installed_digest
+				and not digests_equal(remote_digest, installed_digest)
+		):
+			print(
+				"[launcher] Remote release hash differs from installed build; reinstalling to ensure integrity."
+			)
+			needs_install = True
+		elif not needs_install and remote_digest and not installed_digest:
+			print(
+				"[launcher] Installed build lacks checksum metadata; reinstalling to capture official digest."
+			)
+			needs_install = True
+		else:
+			return local_version, remote_version
 
 	if not needs_install:
 		if assume_yes:
