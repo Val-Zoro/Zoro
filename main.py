@@ -1,4 +1,6 @@
-VERSION = "v2.5.2"
+import random
+
+VERSION = "v2.5.3-ALPHA"
 
 import argparse
 import asyncio
@@ -255,13 +257,14 @@ pub_key = ("-----BEGIN PUBLIC KEY-----\n"
            "5QIDAQAB\n"
            "-----END PUBLIC KEY-----")
 
-BANNER = """
-██╗   ██╗ █████╗ ██╗      ██████╗ ██████╗  █████╗ ███╗   ██╗████████╗    ███████╗ ██████╗ ██████╗  ██████╗ 
-██║   ██║██╔══██╗██║     ██╔═══██╗██╔══██╗██╔══██╗████╗  ██║╚══██╔══╝    ╚══███╔╝██╔═══██╗██╔══██╗██╔═══██╗
-██║   ██║███████║██║     ██║   ██║██████╔╝███████║██╔██╗ ██║   ██║         ███╔╝ ██║   ██║██████╔╝██║   ██║
-╚██╗ ██╔╝██╔══██║██║     ██║   ██║██╔══██╗██╔══██║██║╚██╗██║   ██║        ███╔╝  ██║   ██║██╔══██╗██║   ██║
- ╚████╔╝ ██║  ██║███████╗╚██████╔╝██║  ██║██║  ██║██║ ╚████║   ██║       ███████╗╚██████╔╝██║  ██║╚██████╔╝
-  ╚═══╝  ╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝       ╚══════╝ ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ 
+BANNER = """                                 
+[dark_red] ▄▄▄▄▄▄▄▄                               [/dark_red]
+[red] ▀▀▀▀▀███                               [/red]
+[red]     ██▀    ▄████▄    ██▄████   ▄████▄  [/red]
+[dark_red]   ▄██▀    ██▀  ▀██   ██▀      ██▀  ▀██ [/dark_red]
+[dark_magenta]  ▄██      ██    ██   ██       ██    ██ [/dark_magenta]
+[bright_magenta] ███▄▄▄▄▄  ▀██▄▄██▀   ██       ▀██▄▄██▀ [/bright_magenta]
+[dark_magenta] ▀▀▀▀▀▀▀▀    ▀▀▀▀     ▀▀         ▀▀▀▀   [/dark_magenta]
 """
 
 
@@ -587,15 +590,15 @@ def handle_rate_limit(response, url, method="GET", headers=None, params=None, da
 		return SESSION.request(method, url, params=params, json=json or data, headers=headers, verify=verify,
 		                       timeout=REQUEST_TIMEOUT)
 
-	return response  # No rate limit header, fallback to exponential backoff
+	return response  # No rate limit header
 
 
-def api_request(method, url, params=None, data=None, headers=None, json=None, verify=None):
+def api_request(method, url, params=None, data=None, headers=None, json=None, verify=None, timeout=None, retry=None):
 	"""Handles API requests and switches to debug mode if enabled."""
 
 	OVERRIDE_RESPONSES = {
-		"https://glz-na-1.na.a.pvp.net/core-game/": {"status": 404},  # Stop from connecting to the data core game
-		"https://glz-na-1.na.a.pvp.net/pregame/": {"status": 404},  # Stop from connecting to the data per game
+		"https://glz-na-1.na.a.pvp.net/core-game/": {"status": 404},  # Stop from connecting to the data core-game
+		"https://glz-na-1.na.a.pvp.net/pregame/": {"status": 404},  # Stop from connecting to the data pre-game
 	}
 
 	disable_warnings()  # noqa
@@ -617,8 +620,12 @@ def api_request(method, url, params=None, data=None, headers=None, json=None, ve
 	if data is None and json is not None:
 		data = json
 	# Reuse shared session with connection pooling and timeouts
+	if timeout is None:
+		timeout = REQUEST_TIMEOUT
+
 	response = SESSION.request(method, url, params=params, json=data, headers=headers, verify=verify,
-	                           timeout=REQUEST_TIMEOUT)
+	                           timeout=timeout)
+	# console.print(f"Response Code: {response.status_code}")
 
 	if response.status_code == 200:
 		if SAVE_DATA:
@@ -628,6 +635,9 @@ def api_request(method, url, params=None, data=None, headers=None, json=None, ve
 		return response
 	elif response.status_code == 429:
 		return handle_rate_limit(response, url, method, headers, params, data, json, verify)
+	elif response.status_code == 400:
+		asyncio.create_task(log_in())
+		return api_request(method, url, params, data, headers, json, verify)
 	else:
 		if response.status_code != 404:
 			error_context = {
@@ -690,6 +700,7 @@ async def get_user_data_from_riot_client() -> tuple[str, str, str] | None:
 						"Host": f"127.0.0.1:{port}",
 					},
 					verify=False,
+					timeout=(3, 6)
 			) as r:
 				return_data = r.json()
 		except Exception as token_error:
@@ -3732,11 +3743,11 @@ def get_rank_from_uuid(user_id: str, platform: str = "PC"):
 def create_session():
 	session = Session()
 	retry = Retry(
-		total=3,  # Total number of retries
-		read=5,  # Number of retries on read errors
-		connect=5,  # Number of retries on connection errors
+		total=2,  # Total number of retries
+		read=3,  # Number of retries on read errors
+		connect=2,  # Number of retries on connection errors
 		backoff_factor=1,  # Backoff factor to apply between attempts
-		status_forcelist=[500, 502, 503, 504],  # Retry on these status codes
+		status_forcelist=[500, 502, 503, 504]  # Retry on these status codes
 	)
 	adapter = HTTPAdapter(max_retries=retry)
 	session.mount('https://', adapter)
@@ -3778,6 +3789,70 @@ def _build_match_history_query(gamemode: str | None) -> tuple[str, str]:
 
 	queue_filter = search.split("=")[-1] if search else "all"
 	return search, queue_filter
+
+
+def get_all_agents_list() -> tuple[list[dict[str, str]], dict[str, str]] | None:
+	all_agents = []
+	r = api_request("GET", "https://valorant-api.com/v1/agents?isPlayableCharacter=true")
+	if r.status_code == 200:
+		# Format again...
+		for agent in r.json()["data"]:
+			data = {"name": agent.get("displayName"), "uuid": agent.get("uuid"),
+			        "baseContent": agent.get("isBaseContent")}
+			all_agents.append(data)
+		agents_by_uuid = {agent["uuid"]: agent["name"] for agent in all_agents}
+		return all_agents, agents_by_uuid
+	else:
+		print(r.status_code)
+	return None
+
+
+def get_owned_agents() -> list[dict[str, str]] | list:
+	r = api_request("GET",
+	                f"https://pd.na.a.pvp.net/store/v1/entitlements/{val_uuid}/01bb38e1-da47-4e6a-9b3d-945fe4655707",
+	                headers=internal_api_headers)
+	if r.status_code == 200:
+		all_owned_agents = []
+		all_agents, all_agents_by_uuid = get_all_agents_list()
+		# Format request
+		for owned_agent in r.json()["Entitlements"]:
+			agent_id = owned_agent["ItemID"]
+			if all_agents_by_uuid.get(agent_id, None) is not None:
+				all_owned_agents.append({"name": str(all_agents_by_uuid.get(agent_id)), "uuid": str(agent_id)})
+		# Add all free agents
+		missing_agents = []
+		for agents in all_agents:
+			if agents["baseContent"]:
+				missing_agents.append({"name": agents["name"], "uuid": agents["uuid"]})
+		all_owned_agents.extend(missing_agents)
+		return all_owned_agents
+	return []
+
+
+def select_agent(agent_uuid: str) -> bool:
+	try:
+		if get_user_current_state(val_uuid) == 3:
+			r = api_request("GET", f"https://glz-na-1.na.a.pvp.net/pregame/v1/players/{val_uuid}",
+			                headers=internal_api_headers)
+			if r.status_code == 200:
+				match_id = r.json()["MatchID"]
+				return_code = api_request("POST",
+				                          f"https://glz-na-1.na.a.pvp.net/pregame/v1/matches/{match_id}/select/{agent_uuid}",
+				                          headers=internal_api_headers)
+				if return_code.status_code == 200:
+					return True
+				else:
+					logger.warning(f"Error selecting agent", context={"match_id": match_id, "agent_uuid": agent_uuid,
+					                                                  "return_data": return_code.json()})
+			else:
+				logger.info("Error with select_agent, called without being in pregame",
+				            context={"return_data": r.json()})
+		else:
+			logger.info("Error with select_agent, called without state being in pregame")
+		return False
+	except Exception as e:
+		logger.error("Error with select_agent", exc_info=e)
+		return False
 
 
 def get_player_data_from_uuid(user_id: str, cache: dict | None, platform: str = "PC", gamemode: str = None):
@@ -4994,6 +5069,10 @@ async def run_pregame(data: dict):
 						mode_name = "Custom Game"
 				except KeyError:
 					mode_name = str(match_data["QueueID"]).capitalize()
+
+				if mode_name.lower() in GAME_MODES.keys():
+					mode_name = GAME_MODES[mode_name.lower()]
+
 				map_name = get_mapdata_from_id(map_id)
 				if map_name is None or map_name == "":
 					map_name = "The Range"
@@ -5375,7 +5454,8 @@ async def handle_scorecard_command(user_input: str, party_id: str | None) -> Non
 			render_zoro_scorecard(target.get("label", "Unknown Player"), entries, show_breakdown=show_breakdown))
 
 
-async def listen_for_input(party_id: str):
+async def listen_for_input(party_id: str = None):
+	# FIXME | Fix the party_id can be None
 	is_ready = True  # Start with the default ready state
 	console.print("Enter a command: ")
 
@@ -5415,6 +5495,16 @@ async def listen_for_input(party_id: str):
 					console.print("\n".join(friend_states))
 				else:
 					console.print("No friends found or unable to fetch friend states.")
+			elif user_input.lower() in ["random", "rand", "rando", "randomize", "pick", "agent"]:
+				print("Randomizing agents...")
+				all_owned_agents = get_owned_agents()
+				random_agent = random.choice(all_owned_agents)
+				# TODO | Check if taken
+				if select_agent(random_agent['uuid']):
+					console.print(f"Selected random agent: {random_agent['name']}")
+				else:
+					console.print(
+						f"[light_gray]Issue with auto select[/light_gray]\nRandom agent: {random_agent['name']}")
 			elif user_input.lower() in ["help", "h", "?"]:
 				table = Table(show_header=False, box=None, show_lines=True, row_styles=["red", "dim"])
 				table.add_row("r", "Toggle Ready State", end_section=True)
@@ -5428,6 +5518,7 @@ async def listen_for_input(party_id: str):
 				table.add_row("store", "Open Valorant Store Interface", end_section=True)
 				table.add_row("quit/leave", "Quit Current Game", end_section=True)
 				table.add_row("friends/f", "Show Friend States", end_section=True)
+				table.add_row("random/rand/agent", "Randomize Agent", end_section=True)
 				table.add_row("help/h/?", "Show This Help Message", end_section=True)
 				console.print(table, style="cyan")
 			if DEBUG:
@@ -5527,7 +5618,7 @@ async def get_party(got_rank: dict = None):
 					if not task.done():
 						continue
 
-					prefetch_tasks.pop(player_id, None)
+					await prefetch_tasks.pop(player_id, None)
 					try:
 						task.result()
 					except asyncio.CancelledError:
@@ -5796,6 +5887,7 @@ def render_no_party_message(buffer: StringIO, last_rendered_content: str):
 
 
 async def check_if_user_in_pregame(send_message: bool = False) -> bool:
+	input_task = None
 	if send_message:
 		console.print("\n\nChecking if player is in match")
 
@@ -5815,6 +5907,8 @@ async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 					clear_console()
 					logger.log(3, "Loading check_pregame -> pregame")
 					Notification.clear_notifications()
+					if input_task is None:
+						input_task = asyncio.create_task(listen_for_input())
 					await run_pregame(data)
 					if state_manager is not None:
 						state_manager.exhaust()
@@ -6082,13 +6176,13 @@ async def main() -> bool:
 				_print_exit_message()
 				return False
 			except Exception as e:
-				traceback_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 				logger.error(
 					"Unhandled error inside interactive main loop",
 					context={"state": state},
 					exc_info=e,
 				)
-				console.print(f"[bold red]An Error Has Happened![/bold red]\n{traceback_str}")
+				console.print(f"[bold red]An Error Has Happened![/bold red]\n")
+				console.print_exception()
 				await asyncio.sleep(2)
 	else:
 		logger.warning("Login attempt unsuccessful; main loop will retry.")
@@ -6315,14 +6409,18 @@ if __name__ == "__main__":
 	ROLE_PUUID_LIST: dict = api_request("GET", f"{b64decode(ROLE_URL.encode()).decode()}").json()
 
 	RPC = None
-	if not args.no_rpc:
+	if not args.no_rpc & bool(config_main.get("use_discord_rich_presence", "true").lower() == "true"):
 		try:
 			nest_asyncio.apply()
 			RPC = Presence(CLIENT_ID)
+			RPC.connection_timeout = 10
 			RPC.connect()
 		except Exception as e:
 			logger.log(2, f"Error initializing Discord RPC: {e}")
 			RPC = None
+			# Make sure RPC is not used.
+			config_main["use_discord_rich_presence"] = "false"
+			args.no_rpc = True
 
 	while True:
 		try:
