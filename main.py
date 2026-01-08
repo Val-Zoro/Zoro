@@ -1,6 +1,15 @@
-import random
+# --------------------------------------------------------------------------------
+# (Valorant) - Zoro
+# Made by: Saucywan
+# Made as my fun personal project, don't make fun pls 😭
+# --------------------------------------------------------------------------------
 
-VERSION = "v2.5.3-ALPHA"
+# -- Main Build Config -----------------------------------------------------------
+VERSION = "v2.6.0"
+BUILD_BRANCH = "BETA"  # BETA, ALPHA, STABLE, PRIVATE
+DEV = False
+
+# -- Imports ---------------------------------------------------------------------
 
 import argparse
 import asyncio
@@ -8,6 +17,7 @@ import atexit
 import configparser
 import hashlib
 import os
+import random
 import sys
 import threading
 import time
@@ -51,41 +61,121 @@ from rich.text import Text
 from urllib3 import disable_warnings
 from urllib3.util.retry import Retry  # noqa | Ignore, should work fine
 
-console = Console()
-pretty.install()
+# -- Config ----------------------------------------------------------------------
 
-DEBUG = False
+if DEV:
+	DEBUG = True
+else:
+	DEBUG = False
 DEBUG_MODE = False
 SAVE_DATA = False
-OFFLINE_MODE = False
-CLI_DEBUG_OVERRIDE = False
-OFFLINE_STATE_MANAGER = None
 
+CONFIG_FILE = "config.ini"  # Name / Path for the config file
+CLIENT_ID = 1354365908054708388  # For discord RPC
+
+ROLE_URL = "aHR0cHM6Ly9naXN0LmdpdGh1YnVzZXJjb250ZW50LmNvbS9TYXVjeXdhbi80MzgyODA1MzgyMDk3OThjMDBkNjE5MGRhYjlmN2ZlZS9yYXcv"
+CONFIG_URL = "aHR0cHM6Ly9jb25maWcuc2F1Y3l3YW4uZGV2L3YxL2NvbmZpZw=="
+
+CLI_DEBUG_OVERRIDE = False
+
+ITEM_TYPE_LABELS: dict[str, str] = {
+	"e7c63390-eda7-46e0-bb7a-a6abdacd2433": "Weapon Skin",
+	"dd3bf334-87f3-40bd-b043-682a57a8dc3a": "Gun Buddy",
+	"d5f120f8-ff8c-4aac-92ea-f2b5acbe9475": "Spray",
+	"3f296c07-64c3-494c-923b-fe692a4fa1bd": "Player Card",
+	"de7caa6b-adf7-4588-bbd1-143831e786c6": "Player Title",
+	"03a572de-4234-31ed-d344-ababa488f981": "Flex"
+}
+
+GAME_MODES = {
+	"unrated": "Unrated",
+	"competitive": "Competitive",
+	"swiftplay": "Swiftplay",
+	"spikerush": "Spikerush",
+	"deathmatch": "Deathmatch",
+	"ggteam": "Escalation",
+	"hurm": "Team Deathmatch",
+	"premier-seasonmatch": "Premier",
+	"premier-scrim": "Premier"
+}
+
+# -- Init vars -------------------------------------------------------------------
 val_token = ""
 val_access_token = ""
 val_entitlements_token = ""
 val_uuid = ""
 region = ""
-
-internal_api_headers = {}
-internal_api_headers_console = {}
-
 password = ""
 port = ""
 
+internal_api_headers = {}
+internal_api_headers_console = {}
+image_cache = {}
+
 party_size = 1
+
+input_task = None
+_CONSOLE_HWND = None
+CONFIG_MANAGER: Optional = None
+CONFIG: Optional = None
 
 DEFAULT_MENU_ACTION = "manual"
 SETUP_COMPLETED = False
 STORE_ONLY_MODE = False
 VALID_MENU_ACTIONS = {"manual", "shop", "loader"}
 SCORECARD_COMMANDS = {"score", "scores", "scorecard", "zscore", "zoro"}
-DISCLAIMER_LINES = (
-	"Valorant Zoro is a community-maintained client that is not endorsed by Riot Games.",
-	"Use of automation or private APIs may violate Riot's terms of service and can lead to account action.",
-	"Never share authentication tokens, cookies, or log files that contain personal information.",
-	"You accept full responsibility for how you use this software.",
-)
+DISCLAIMER: tuple[str, int] = "Failed to get DISCLAIMER", -1
+
+DATA_PATH = "data"
+
+pub_key = ("-----BEGIN PUBLIC KEY-----\n"
+           "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqIKYJWIl6Wif397yi3P+\n"
+           "YnVZ9ExhGvuUpECU+BhpnJkP1pHJldurnKfpIdGhsiTblzlFvMS5y3wdKNmtpIW7\n"
+           "8KVC8bL7FwLShmMBQNkEL4GvZfgGHYbAlJOXOiWuqDk/CS28ccZyEzAkxT4WY4H2\n"
+           "BWVVBPax72ksJL2oMOxYJVZg2w3P3LbWNfcrgAC1/HPVzmuYka0IDo9TevbCwccC\n"
+           "yNS3GlJ6g4E7yp8RIsFyEoq7DueHuK+zkvgpmb5eLRg8Ssq9t6bCcnx6Sl2hb4n/\n"
+           "5OmRNvohCFM3WpP1vAdNxrsQT8uSuExbH4g7uDT/l5+ZdpxytzEzGdvPezmPiXhL\n"
+           "5QIDAQAB\n"
+           "-----END PUBLIC KEY-----")
+
+BANNER = """                                 
+[bold #5A141A] ▄▄▄▄▄▄▄▄                               [/]
+[bold #7A1A1F] ▀▀▀▀▀███                               [/]
+[bold #9B1F25]     ██▀    ▄████▄    ██▄████   ▄████▄  [/]
+[bold #B7262D]   ▄██▀    ██▀  ▀██   ██▀      ██▀  ▀██ [/]
+[bold #D12F38]  ▄██      ██    ██   ██       ██    ██ [/]
+[bold #FF4655] ███▄▄▄▄▄  ▀██▄▄██▀   ██       ▀██▄▄██▀ [/]
+[bold #F87171] ▀▀▀▀▀▀▀▀    ▀▀▀▀     ▀▀         ▀▀▀▀   [/]
+"""
+
+SELF_BADGE_RICH = "[bold white on blue] YOU [/]"
+SELF_BADGE_PLAIN = "[YOU]"
+
+# Static utility classification for advanced view
+_AGENT_UTILITY_TAG: Dict[str, str] = {
+	# Flashers
+	"Phoenix": "Flash",
+	"Yoru": "Flash",
+	"Breach": "Flash",
+	"Skye": "Flash",
+	"KAY/O": "Flash",
+	"Gekko": "Flash",
+	"Reyna": "Flash",
+	"Vyse": "Flash",
+	# Smokers / Controllers
+	"Brimstone": "Smoke",
+	"Omen": "Both",
+	"Astra": "Smoke",
+	"Viper": "Smoke",
+	"Harbor": "Smoke",
+	"Clove": "Smoke"
+}
+
+LOOP_THROTTLE_INITIAL = 1.0
+LOOP_THROTTLE_MIN = 0.6
+LOOP_THROTTLE_MAX = 2.0
+LOOP_THROTTLE_INCREASE = 0.2
+LOOP_THROTTLE_DECREASE = 0.25
 
 MAX_CONCURRENT_REQUESTS = 2
 request_semaphore = threading.Semaphore(MAX_CONCURRENT_REQUESTS)
@@ -96,6 +186,9 @@ PLAYER_STATS_PARTY_CACHE: dict[str, dict[str, list[str]]] = {}
 PLAYER_STATS_CACHE_EXPIRY: dict[str, float] = {}
 PLAYER_STATS_CACHE_TTL = 300  # seconds to reuse prefetched stats between views
 
+ASYNC_EXCEPTION_HANDLER: Optional[
+	Callable[[asyncio.AbstractEventLoop, Dict[str, Any]], None]
+] = None
 
 @dataclass(frozen=True)
 class ZoroScoreEntry:
@@ -123,22 +216,6 @@ class BundleItem:
 	cost: int
 	rarity: tuple[str, str, str] | None = None
 	item_type: str = "Item"
-
-
-ITEM_TYPE_LABELS: dict[str, str] = {
-	"e7c63390-eda7-46e0-bb7a-a6abdacd2433": "Weapon Skin",
-	"dd3bf334-87f3-40bd-b043-682a57a8dc3a": "Gun Buddy",
-	"d5f120f8-ff8c-4aac-92ea-f2b5acbe9475": "Spray",
-	"3f296c07-64c3-494c-923b-fe692a4fa1bd": "Player Card",
-	"de7caa6b-adf7-4588-bbd1-143831e786c6": "Player Title",
-	"03a572de-4234-31ed-d344-ababa488f981": "Flex"
-}
-
-input_task = None
-
-ASYNC_EXCEPTION_HANDLER: Optional[
-	Callable[[asyncio.AbstractEventLoop, Dict[str, Any]], None]
-] = None
 
 
 def _prompt_bool(question: str, default: bool) -> bool:
@@ -214,6 +291,19 @@ def _prompt_int(question: str, default: int, *, minimum: int | None = None, maxi
 		return value
 
 
+def load_config():
+	global DISCLAIMER, GAME_MODES, ITEM_TYPE_LABELS
+	r = get(b64decode(CONFIG_URL).decode())
+	if r.status_code != 200:
+		logger.warning(f"Failed to load config from {b64decode(CONFIG_URL).decode()}: {r.status_code}")
+		return None
+	else:
+		data = r.json()
+		DISCLAIMER = (data["zoro"]["disclaimer"], int(data["zoro"]["disclaimerId"]))
+		GAME_MODES = data["valorant"]["gameModes"]
+		ITEM_TYPE_LABELS = data["valorant"]["itemTypeLabels"]
+		return data
+
 async def stop_input_listener() -> None:
 	"""Cancel the active input listener task if one is running."""
 	global input_task
@@ -223,49 +313,6 @@ async def stop_input_listener() -> None:
 		with suppress(asyncio.CancelledError):
 			await input_task
 	input_task = None
-
-
-GAME_MODES = {
-	"unrated": "Unrated",
-	"competitive": "Competitive",
-	"swiftplay": "Swiftplay",
-	"spikerush": "Spikerush",
-	"deathmatch": "Deathmatch",
-	"ggteam": "Escalation",
-	"hurm": "Team Deathmatch",
-	"premier-seasonmatch": "Premier",
-	"premier-scrim": "Premier"
-}
-
-CONFIG_FILE = "config.ini"  # Name / Path for the config file
-CLIENT_ID = 1354365908054708388  # For discord RPC
-
-# ROLES_ID = "LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1DNENBUUF3QlFZREsyVndCQ0lFSUwzWXZkQ0YvZjd5MzdwMFJJem5GZElob2ZiS0VSQ2Yza0lNQ29qNjhUYVcKLS0tLS1FTkQgUFJJVkFURSBLRVktLS0tLQ=="
-ROLE_URL = "aHR0cHM6Ly9naXN0LmdpdGh1YnVzZXJjb250ZW50LmNvbS9TYXVjeXdhbi80MzgyODA1MzgyMDk3OThjMDBkNjE5MGRhYjlmN2ZlZS9yYXcv"
-
-DATA_PATH = "data"
-if not os.path.exists(DATA_PATH) and DEBUG:
-	os.mkdir(DATA_PATH)
-
-pub_key = ("-----BEGIN PUBLIC KEY-----\n"
-           "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqIKYJWIl6Wif397yi3P+\n"
-           "YnVZ9ExhGvuUpECU+BhpnJkP1pHJldurnKfpIdGhsiTblzlFvMS5y3wdKNmtpIW7\n"
-           "8KVC8bL7FwLShmMBQNkEL4GvZfgGHYbAlJOXOiWuqDk/CS28ccZyEzAkxT4WY4H2\n"
-           "BWVVBPax72ksJL2oMOxYJVZg2w3P3LbWNfcrgAC1/HPVzmuYka0IDo9TevbCwccC\n"
-           "yNS3GlJ6g4E7yp8RIsFyEoq7DueHuK+zkvgpmb5eLRg8Ssq9t6bCcnx6Sl2hb4n/\n"
-           "5OmRNvohCFM3WpP1vAdNxrsQT8uSuExbH4g7uDT/l5+ZdpxytzEzGdvPezmPiXhL\n"
-           "5QIDAQAB\n"
-           "-----END PUBLIC KEY-----")
-
-BANNER = """                                 
-[dark_red] ▄▄▄▄▄▄▄▄                               [/dark_red]
-[red] ▀▀▀▀▀███                               [/red]
-[red]     ██▀    ▄████▄    ██▄████   ▄████▄  [/red]
-[dark_red]   ▄██▀    ██▀  ▀██   ██▀      ██▀  ▀██ [/dark_red]
-[dark_magenta]  ▄██      ██    ██   ██       ██    ██ [/dark_magenta]
-[bright_magenta] ███▄▄▄▄▄  ▀██▄▄██▀   ██       ▀██▄▄██▀ [/bright_magenta]
-[dark_magenta] ▀▀▀▀▀▀▀▀    ▀▀▀▀     ▀▀         ▀▀▀▀   [/dark_magenta]
-"""
 
 
 class Logger:
@@ -448,9 +495,6 @@ class Logger:
 	def log_exception(self, message: str, exception: BaseException,
 	                  *, context: Optional[Mapping[str, Any]] = None, level: int = 1) -> int:
 		return self.log(level, message, context=context, exc_info=exception)
-
-
-logger: Optional["Logger"] = None
 
 
 def _log_runtime_event(level: int, event: str, message: str, **context: Any) -> None:
@@ -957,8 +1001,6 @@ class SingleInstanceGuard:
 			if self._lock_path and self._lock_path.exists():
 				with suppress(Exception):
 					self._lock_path.unlink()
-
-image_cache = {}
 
 
 def load_image(url, size=None):
@@ -3186,6 +3228,24 @@ def build_main_config_manager(
 						"Automatically updated by the application.",
 					),
 				),
+				ConfigOption(
+					key="disclaimer_accepted",
+					default=False,
+					value_type="bool",
+					description=(
+						"Tracks whether the disclaimer has been accepted.",
+						"Automatically updated by the application.",
+					),
+				),
+				ConfigOption(
+					key="disclaimer_id",
+					default=0,
+					value_type="int",
+					description=(
+						"Tracks which disclaimer was accepted.",
+						"Automatically updated by the application.",
+					),
+				),
 			),
 		),
 	)
@@ -3240,6 +3300,81 @@ def _print_setup_step(
 	)
 
 
+def agree_to_disclaimer(id: int | None, clear: bool = False):
+	if clear:
+		clear_console()
+	if id is None:
+		id = 0
+	disclaimer_text = str(DISCLAIMER[0])
+	console.print("\n")
+	console.print(
+		Panel(
+			disclaimer_text,
+			title="Disclaimer",
+			border_style="red",
+			subtitle="Read carefully before continuing",
+		)
+	)
+	if not _prompt_bool("Do you understand and accept this disclaimer?", default=False):
+		console.print("[bold red] You can't continue without accepting the disclaimer.")
+		time.sleep(1)
+		console.print("[red]Exiting...[/red]")
+		time.sleep(0.75)
+		logger.info("Exiting due to unaccepted disclaimer.")
+		sys.exit(1)
+	else:
+		logger.info("Disclaimer accepted.")
+		CONFIG.set("Main", "disclaimer_accepted", "true")
+		CONFIG.set("Main", "disclaimer_id", str(id))
+		CONFIG_MANAGER.save(CONFIG)
+		return True
+
+
+def check_disclaimer(return_id: bool = False):
+	# Check config.ini to see if the disclaimer was agreed too
+	if config_main.get("disclaimer_accepted", "false").lower() == "true":
+		if REMOTE_CONFIG is not None:
+			disclaimer_id = int(REMOTE_CONFIG["zoro"].get("disclaimerId", 0))
+			local_disclaimer_id = int(config_main.get("disclaimer_id", 0))
+			if local_disclaimer_id == disclaimer_id:
+				if return_id:
+					return_data = (1, int(disclaimer_id))
+				else:
+					return_data = 1
+				return return_data
+			elif local_disclaimer_id < disclaimer_id:
+				config_main["disclaimer_accepted"] = "false"
+				config_main["disclaimer_id"] = str(disclaimer_id)
+				if return_id:
+					return_data = (0, int(disclaimer_id))
+				else:
+					return_data = 0
+				return return_data
+			else:
+				logger.warning("Local Disclaimer ID is above Remote Disclaimer ID.",
+				               context={"disclaimer_id": disclaimer_id, "local_disclaimer_id": local_disclaimer_id})
+				if return_id:
+					return_data = (2, int(disclaimer_id))
+				else:
+					return_data = 2
+				return return_data
+		else:
+			logger.warning("No Remote Config found with user needing to accept disclaimer.")
+			return 3
+	else:
+		if REMOTE_CONFIG is not None:
+			disclaimer_id = int(REMOTE_CONFIG.get("disclaimerId", 0))
+		else:
+			logger.warning("No Remote Config found with user needing to accept disclaimer.")
+			return 4
+
+		if return_id:
+			return_data = (1, int(disclaimer_id))
+		else:
+			return_data = 1
+		agree_to_disclaimer(disclaimer_id)
+		return return_data
+
 def run_setup_wizard(
 		config_manager: ConfigManager,
 		config_parser: configparser.ConfigParser,
@@ -3251,28 +3386,12 @@ def run_setup_wizard(
 		raise RuntimeError("Interactive setup requires a terminal session.")
 	clear_console()
 	console.rule("[bold cyan]Initial Setup[/bold cyan]")
-	disclaimer_text = "\n".join(f"- {line}" for line in DISCLAIMER_LINES)
-	console.print(
-		Panel(
-			disclaimer_text,
-			title="Disclaimer",
-			border_style="red",
-			subtitle="Read carefully before continuing",
-		)
-	)
-	console.print(
-		Panel.fit(
-			"This wizard configures core behaviour and stores your preferences in config.ini.",
-			border_style="blue",
-			title="What to Expect",
-		)
-	)
 
-	if not _prompt_bool("Do you understand and accept this disclaimer?", default=False):
-		raise RuntimeError("Setup aborted because the disclaimer was not accepted.")
-
+	agree_to_disclaimer(DISCLAIMER[1])
+	clear_console()
 	config_main = config_parser["Main"]
 
+	console.rule("[bold cyan]Initial Setup[/bold cyan]")
 	console.rule("[bold cyan]Preferences[/bold cyan]")
 	console.print(
 		"[bright_white]Answer the prompts below. Press enter to keep the suggested value in brackets.[/bright_white]"
@@ -3300,6 +3419,7 @@ def run_setup_wizard(
 		maximum=20,
 	)
 	step_counter += 1
+	clear_console()
 
 	current_mode_setting = config_main.get("stats_used_game_mode", "ALL").strip()
 	default_mode_key = current_mode_setting.lower()
@@ -3330,6 +3450,7 @@ def run_setup_wizard(
 	else:
 		config_main["stats_used_game_mode"] = selected_mode
 	step_counter += 1
+	clear_console()
 
 	use_rpc_default = config_main.get("use_discord_rich_presence", "false").strip().lower() == "true"
 	_print_setup_step(
@@ -3343,6 +3464,7 @@ def run_setup_wizard(
 	)
 	use_rpc = _prompt_bool("Enable Discord Rich Presence?", default=use_rpc_default)
 	step_counter += 1
+	clear_console()
 
 	advanced_default = config_main.get("advanced_missing_agents", "false").strip().lower() == "true"
 	_print_setup_step(
@@ -3359,6 +3481,7 @@ def run_setup_wizard(
 		default=advanced_default,
 	)
 	step_counter += 1
+	clear_console()
 
 	debug_default = config_main.get("enable_debug_logging", "false").strip().lower() == "true"
 	_print_setup_step(
@@ -3372,6 +3495,7 @@ def run_setup_wizard(
 	)
 	debug_logging = _prompt_bool("Enable verbose debug logging?", default=debug_default)
 	step_counter += 1
+	clear_console()
 
 	menu_choices = {
 		"manual": "Choose every time",
@@ -3396,6 +3520,7 @@ def run_setup_wizard(
 		default_menu,
 	)
 	step_counter += 1
+	clear_console()
 
 	config_main["amount_of_matches_for_player_stats"] = str(match_count)
 	config_main["advanced_missing_agents"] = "true" if advanced_agents else "false"
@@ -3433,10 +3558,6 @@ def run_setup_wizard(
 	)
 
 
-CONFIG_MANAGER: Optional[ConfigManager] = None
-CONFIG: Optional[configparser.ConfigParser] = None
-
-
 @lru_cache(maxsize=128)
 def get_userdata_from_id(user_id: str, host_player_uuid: str | None = None) -> tuple[str, bool]:
 	req = api_request("PUT", f"https://pd.na.a.pvp.net/name-service/v2/players", headers=internal_api_headers,
@@ -3452,10 +3573,6 @@ def get_userdata_from_id(user_id: str, host_player_uuid: str | None = None) -> t
 		logger.log(1, f"Error in get_userdata_from_id | {req.status_code} | {req.json()}")
 		return "null", False
 	return "null", False
-
-
-SELF_BADGE_RICH = "[bold white on blue] YOU [/]"
-SELF_BADGE_PLAIN = "[YOU]"
 
 
 def format_player_label(name: str, is_self: bool, *, rich: bool = True) -> str:
@@ -3502,27 +3619,6 @@ def get_all_agents_by_role() -> Dict[str, List[str]]:
 	except Exception:
 		pass
 	return result
-
-
-# Static utility classification for advanced view
-_AGENT_UTILITY_TAG: Dict[str, str] = {
-	# Flashers
-	"Phoenix": "Flash",
-	"Yoru": "Flash",
-	"Breach": "Flash",
-	"Skye": "Flash",
-	"KAY/O": "Flash",
-	"Gekko": "Flash",
-	"Reyna": "Flash",
-	"Vyse": "Flash",
-	# Smokers / Controllers
-	"Brimstone": "Smoke",
-	"Omen": "Both",
-	"Astra": "Smoke",
-	"Viper": "Smoke",
-	"Harbor": "Smoke",
-	"Clove": "Smoke"
-}
 
 
 def categorize_agent_utility(agent_name: str) -> str:
@@ -4525,13 +4621,6 @@ def dispatch_match_report_once(match_id: str) -> bool:
 	return True
 
 
-LOOP_THROTTLE_INITIAL = 1.0
-LOOP_THROTTLE_MIN = 0.6
-LOOP_THROTTLE_MAX = 2.0
-LOOP_THROTTLE_INCREASE = 0.2
-LOOP_THROTTLE_DECREASE = 0.25
-
-
 class LoopThrottler:
 	"""Adaptive sleep helper for console loops."""
 
@@ -4550,27 +4639,13 @@ class LoopThrottler:
 		await asyncio.sleep(self._interval)
 
 
-async def run_in_game(cache: dict | None = None, partys: dict | None = None):
+async def run_in_game(game_data: dict, cache: dict | None = None, partys: dict | None = None):
 	if cache is None:
 		cache = PLAYER_STATS_CACHE
 
-	console.print("Loading...")
-
-	# Fetch match ID
-	while True:
-		try:
-			r = api_request("GET", f"https://glz-na-1.na.a.pvp.net/core-game/v1/players/{val_uuid}",
-			                headers=internal_api_headers)
-			if r.status_code == 200:
-				match_id = r.json()["MatchID"]
-				break
-			else:
-				if 3 <= get_user_current_state(str(val_uuid)) <= 4:
-					await asyncio.sleep(0.5)
-				else:
-					return None
-		except:
-			await asyncio.sleep(0.5)
+	# Check if the game state is not POST_GAME
+	if game_data["State"] != "POST_GAME" and game_data["State"] != "CLOSED":
+		return None
 
 	got_players = False
 	player_data = {}
@@ -4610,17 +4685,8 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 		exit_after_render = False
 		exit_sleep = 0
 		try:
-			# Get match data
-			with api_request("GET", f"https://glz-na-1.na.a.pvp.net/core-game/v1/matches/{match_id}",
-			                 headers=internal_api_headers) as r:
-				if r.status_code == 400:
-					logger.log(2,
-					           f"Login may have expired! Re-logging in.\n Tried to get in-game match data. MATCH_ID -> {match_id}")
-					await log_in()
-				elif r.status_code == 404:
-					return None
-				else:
-					match_data = r.json()
+			match_data = game_data
+			match_id = match_data.get("MatchID")
 			current_state = match_data.get("State")
 			if current_state != last_reported_state:
 				log_debug_event(
@@ -4657,9 +4723,6 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 						large_text="Valorant Zoro",
 						party_size=[party_size, 5],
 					)
-
-				# Build a header string
-				header = f"[green]Map:[/green] {map_name}\n[cyan]Game mode:[/cyan] {mode_name}\n\n"
 
 				# (Populate player lists once)
 				if not got_players:
@@ -4760,13 +4823,11 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 						)
 					return rows
 
-				# ---------- Centered, table-less renderer ----------
-				def _measure(markup: str) -> int:
-					try:
-						return console.measure(Text.from_markup(markup)).maximum
-					except Exception:
-						# Fallback to plain length if markup parsing fails
-						return len(markup)
+				# ---------- In-game renderer ----------
+				def _pretty_match_state(state_value: str | None) -> str:
+					if not state_value:
+						return "Unknown"
+					return str(state_value).replace("_", " ").title()
 
 				def _level_markup(level_value: str, color: str) -> str:
 					lv = level_value
@@ -4775,53 +4836,48 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 					return f"[{color}]LVL {lv}[/{color}]"
 
 				def _agent_markup(agent_value: str) -> str:
-					if agent_value in ("-", "--", "Unknown"):
-						return agent_value
+					if agent_value in ("-", "--", "Unknown", "None", None):
+						return "--"
 					return f"[italic]{agent_value}[/]"
 
-				def _compute_widths(all_rows: list[dict[str, str]], color: str) -> dict[str, int]:
-					widths = {k: 0 for k in ("party", "level", "rank", "player", "agent", "kd", "hs", "recent")}
-					for row in all_rows:
-						level_m = _level_markup(row["level"], color)
-						values = {
-							"party": row["party"],
-							"level": level_m,
-							"rank": get_rank_color(row["rank"], True),
-							"player": row["player"],
-							"agent": _agent_markup(row["agent"]),
-							"kd": row["kd"],
-							"hs": row["hs"],
-							"recent": row["recent"],
-						}
-						for key, val in values.items():
-							widths[key] = max(widths[key], _measure(val))
-					return widths
+				def _recent_markup(recent_value: str) -> str:
+					if recent_value in ("", "-", "--", "None", None):
+						return "[dim]--[/dim]"
+					return f"[magenta]{recent_value}[/magenta]"
 
-				def _pad(markup: str, width: int) -> str:
-					w = _measure(markup)
-					pad = max(0, width - w)
-					return markup + (" " * pad)
+				def build_team_panel(rows: list[dict[str, str]], *, title: str, team_color: str) -> Panel:
+					table = Table(
+						box=box.SIMPLE,
+						show_header=True,
+						header_style=f"bold {team_color}",
+						expand=True,
+					)
+					table.add_column("Party", no_wrap=True)
+					table.add_column("Lvl", justify="right", no_wrap=True)
+					table.add_column("Rank", no_wrap=True)
+					table.add_column("Player")
+					table.add_column("Agent", no_wrap=True)
+					table.add_column("KD", justify="right", no_wrap=True)
+					table.add_column("HS", justify="right", no_wrap=True)
+					table.add_column("Recent", justify="center", no_wrap=True)
 
-				def build_team_panel(rows: list[dict[str, str]], *, header_color: str, widths: dict[str, int],
-				                     title: str, border_style: str) -> Panel:
-					lines: list[str] = []
 					for row in rows:
-						level_m = _level_markup(row["level"], header_color)
-						rank_m = get_rank_color(row["rank"], True)
-						agent_m = _agent_markup(row["agent"])
-						parts = [
-							_pad(row["party"], widths["party"]),
-							_pad(level_m, widths["level"]),
-							_pad(rank_m, widths["rank"]),
-							_pad(row["player"], widths["player"]),
-							_pad(agent_m, widths["agent"]),
-							_pad(row["kd"], widths["kd"]),
-							_pad(row["hs"], widths["hs"]),
-							_pad(row["recent"], widths["recent"]),
-						]
-						lines.append("  ".join(parts))
-					block = Text.from_markup("\n".join(lines)) if lines else Text("")
-					return Panel(Align.center(block), title=title, border_style=border_style, padding=(0, 1))
+						level_markup = _level_markup(row["level"], team_color)
+						rank_markup = get_rank_color(row["rank"], True)
+						agent_markup = _agent_markup(row["agent"])
+						recent_markup = _recent_markup(row["recent"])
+						table.add_row(
+							row["party"],
+							level_markup,
+							rank_markup,
+							row["player"],
+							agent_markup,
+							row["kd"],
+							row["hs"],
+							recent_markup,
+						)
+
+					return Panel(table, title=title, border_style=team_color)
 
 				team_blue_rows = build_team_rows(team_blue_player_list)
 				team_red_rows = build_team_rows(team_red_player_list)
@@ -4832,11 +4888,15 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 					opponent_rows = team_blue_rows
 					own_team_actual = "Red"
 					opponent_actual = "Blue"
+					own_team_color = "red"
+					opponent_color = "blue"
 				else:
 					own_team_rows = team_blue_rows
 					opponent_rows = team_red_rows
 					own_team_actual = "Blue"
 					opponent_actual = "Red"
+					own_team_color = "blue"
+					opponent_color = "red"
 
 				if user_team_id is None:
 					own_team_title = "Your Team"
@@ -4845,27 +4905,36 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 					own_team_title = f"Your Team ({own_team_actual})"
 					opponent_title = f"Opponents ({opponent_actual})"
 
-				# Shared widths across both sides for perfect lining
-				all_rows = own_team_rows + opponent_rows
-				# Compute widths using blue as the level color (only affects LVL styling width)
-				widths = _compute_widths(all_rows, "blue")
 				own_team_panel = build_team_panel(
 					own_team_rows,
-					header_color="blue",
-					widths=widths,
 					title=own_team_title,
-					border_style="blue",
+					team_color=own_team_color,
 				)
 				opponent_panel = build_team_panel(
 					opponent_rows,
-					header_color="red",
-					widths=widths,
 					title=opponent_title,
-					border_style="red",
+					team_color=opponent_color,
 				)
 
 				score = get_current_game_score(val_uuid)
-				render_header = f"{header}[yellow]Score:[/yellow] {score[0]} | {score[1]}\n"
+				if score[0] >= 0 and score[1] >= 0:
+					score_display = f"[blue]{score[0]}[/blue] - [red]{score[1]}[/red]"
+				else:
+					score_display = "--"
+
+				state_label = _pretty_match_state(match_data.get("State"))
+				summary_grid = Table.grid(padding=(0, 1))
+				summary_grid.add_column(justify="right", style="bold cyan")
+				summary_grid.add_column()
+				summary_grid.add_row("Map", map_name)
+				summary_grid.add_row("Mode", mode_name)
+				summary_grid.add_row("State", state_label)
+				summary_grid.add_row("Score", score_display)
+				if user_team_id is not None:
+					summary_grid.add_row("Team", own_team_actual)
+				if host_player_agent:
+					summary_grid.add_row("Agent", host_player_agent)
+				summary_panel = Panel(summary_grid, title="Match", border_style="green")
 
 				scoreboard_lines = []
 				try:
@@ -4894,13 +4963,22 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 					pass
 
 				render_payload = {
-					"header": render_header,
+					"map": map_name,
+					"mode": mode_name,
+					"state": match_data.get("State"),
+					"score": score,
 					"own_team_label": own_team_title,
 					"opponent_label": opponent_title,
 					"own_team_rows": own_team_rows,
 					"opponent_rows": opponent_rows,
+					"agent": host_player_agent,
 					"scoreboard": scoreboard_lines
 				}
+
+				notification_display = None
+				if Notification.has_notifications():
+					notification_display = Notification.get_display()
+					render_payload["notifications"] = list(Notification.notifications)
 				# Hash the render payload so we only redraw when meaningful data changes.
 				signature = hashlib.sha1(dumps(render_payload, sort_keys=True).encode("utf-8")).hexdigest()
 				state_changed = signature != last_signature
@@ -4908,10 +4986,17 @@ async def run_in_game(cache: dict | None = None, partys: dict | None = None):
 					last_signature = signature
 					console.clear()
 					clear_console()
-					console.print(Align.center(Text.from_markup(render_header)))
+					if notification_display is not None:
+						console.print(notification_display, markup=True)
+					console.print(summary_panel)
 					console.print(Columns([own_team_panel, opponent_panel], expand=True, equal=True))
-					for line in scoreboard_lines:
-						console.print(line)
+					if scoreboard_lines:
+						scoreboard_panel = Panel(
+							Text.from_markup("\n".join(scoreboard_lines)),
+							title="Match Result",
+							border_style="yellow",
+						)
+						console.print(scoreboard_panel)
 
 				got_players = True
 
@@ -5017,7 +5102,6 @@ async def run_pregame(data: dict):
 
 	got_rank = False
 	got_map_and_gamemode = False
-	player_data = {}
 	threads = []
 	rank_list = {}
 
@@ -5046,7 +5130,6 @@ async def run_pregame(data: dict):
 	while True:
 		state_changed = False
 		try:
-			buffer = StringIO()
 			with api_request("GET", f"https://glz-na-1.na.a.pvp.net/pregame/v1/matches/{data['MatchID']}",
 			                 headers=internal_api_headers) as r:
 				match_data = r.json()
@@ -5072,6 +5155,8 @@ async def run_pregame(data: dict):
 
 				if mode_name.lower() in GAME_MODES.keys():
 					mode_name = GAME_MODES[mode_name.lower()]
+				else:
+					mode_name = "Unknown"
 
 				map_name = get_mapdata_from_id(map_id)
 				if map_name is None or map_name == "":
@@ -5086,21 +5171,71 @@ async def run_pregame(data: dict):
 
 				got_map_and_gamemode = True
 
-			buffer.write(f"[bright_white]{'=' * 30}[/bright_white]\n")
-			buffer.write(f"[green]Map: {map_name}[/green]\n")
-			buffer.write(f"[cyan]Game Mode: {str(mode_name).capitalize()}[/cyan]\n")
-			buffer.write(f"[bright_white]{'=' * 30}\n\n[/bright_white]")
+			our_team_colour = match_data["AllyTeam"]["TeamID"]
+			side = "Unknown"
+			# Convert into attack or defense
+			if our_team_colour.lower() == "red":
+				side = "Attack"
+			elif our_team_colour.lower() == "blue":
+				side = "Defense"
+			else:
+				logger.warning(f"Failed to get side for {our_team_colour}",
+				               context={"side": side, "TeamData": match_data["AllyTeam"]})
 
-			# our_team_colour = match_data["AllyTeam"]["TeamID"]
+			phase_remaining_ns = match_data.get("PhaseTimeRemainingNS", 0) or 0
+			phase_seconds = max(0, int(phase_remaining_ns / 1_000_000_000))
+			phase_label = "Loading" if phase_remaining_ns == 0 else "Agent Select"
+			phase_color = "cyan" if phase_remaining_ns == 0 else "yellow"
+			if phase_remaining_ns == 0:
+				time_display = "--"
+			else:
+				time_display = f"{phase_seconds // 60}:{phase_seconds % 60:02d}"
+
+			ally_players = match_data["AllyTeam"]["Players"]
+			ally_locked = sum(
+				1 for player in ally_players
+				if player.get("CharacterSelectionState") == "locked"
+			)
+			ally_total = len(ally_players)
+			enemy_locked = int(match_data.get("EnemyTeamLockCount", 0))
+			enemy_total = int(match_data.get("EnemyTeamSize", 0))
+
+			side_display = side.upper() if side != "Unknown" else side
+			summary_grid = Table.grid(padding=(0, 1))
+			summary_grid.add_column(justify="right", style="bold cyan")
+			summary_grid.add_column()
+			summary_grid.add_row("Map", map_name)
+			summary_grid.add_row("Mode", mode_name)
+			summary_grid.add_row("Side", side_display)
+			summary_grid.add_row("Phase", f"[{phase_color}]{phase_label}[/{phase_color}]")
+			summary_grid.add_row("Time", time_display)
+			summary_grid.add_row("Allies Locked", f"{ally_locked}/{ally_total}")
+			summary_grid.add_row("Enemy Locked", f"{enemy_locked}/{enemy_total}")
+			summary_panel = Panel(summary_grid, title="Match", border_style="green")
+
+			roster_table = Table(
+				box=box.SIMPLE,
+				show_header=True,
+				header_style="bold magenta",
+				expand=True,
+			)
+			roster_table.add_column("State", no_wrap=True)
+			roster_table.add_column("Agent", no_wrap=True)
+			roster_table.add_column("Player")
+			roster_table.add_column("Rank", no_wrap=True)
+			roster_table.add_column("Stats", justify="right")
+			roster_table.add_column("Recent", justify="center", no_wrap=True)
 
 			party_number = 1
 			party_exists = []
 
 			# Track which agents have been selected so far
 			selected_agent_ids: List[str] = []
+			roster_signature: list[str] = []
 
-			for ally_player in match_data["AllyTeam"]["Players"]:
-				user_name, is_user = get_userdata_from_id(ally_player["PlayerIdentity"]["Subject"], val_uuid)
+			for ally_player in ally_players:
+				player_id = ally_player["PlayerIdentity"]["Subject"]
+				user_name, is_user = get_userdata_from_id(player_id, val_uuid)
 				user_name = format_player_label(user_name, is_user)
 
 				is_level_hidden = ally_player["PlayerIdentity"]["HideAccountLevel"]
@@ -5118,9 +5253,14 @@ async def run_pregame(data: dict):
 						selected_agent_ids.append(ally_player["CharacterID"])
 					if is_user:
 						if config_main.get("use_discord_rich_presence", "").lower() == "true":
+							agent_state = "H" if state.lower() == "selected" else "L"
+							details_text = (
+								f"{map_name} | {mode_name.capitalize()} | ({agent_state}) "
+								f"{agent_name.capitalize()}"
+							)
 							RPC.update(
 								state="In Agent Select",
-								details=f"{map_name} | {mode_name.capitalize()} | ({'H' if state.lower() == 'selected' else 'L'}) {agent_name.capitalize()}",
+								details=details_text,
 								party_size=[party_size, 5],
 							)
 				except Exception:
@@ -5128,15 +5268,15 @@ async def run_pregame(data: dict):
 
 				if not got_rank:
 					if "console" in mode_name.lower():
-						rank = get_rank_from_uuid(str(ally_player["PlayerIdentity"]["Subject"]), "CONSOLE")
+						rank = get_rank_from_uuid(str(player_id), "CONSOLE")
 						rank_list[str(user_name)] = str(rank)
 						thread = threading.Thread(target=fetch_player_data,
-						                          args=(ally_player["PlayerIdentity"]["Subject"], "CONSOLE"))
+						                          args=(player_id, "CONSOLE"))
 					else:
-						rank = get_rank_from_uuid(str(ally_player["PlayerIdentity"]["Subject"]))
+						rank = get_rank_from_uuid(str(player_id))
 						rank_list[str(user_name)] = str(rank)
 						thread = threading.Thread(target=fetch_player_data,
-						                          args=(ally_player["PlayerIdentity"]["Subject"], "PC"))
+						                          args=(player_id, "PC"))
 					threads.append(thread)
 					thread.start()
 
@@ -5147,7 +5287,7 @@ async def run_pregame(data: dict):
 				# Ensure the rank color is applied correctly
 				for party_id, members in partys.items():
 					if len(members) > 1:
-						if ally_player["PlayerIdentity"]["Subject"] in members:
+						if player_id in members:
 							for existing_party in party_exists:
 								if existing_party[0] == party_id:
 									party_symbol = get_party_symbol(int(existing_party[1]), True)
@@ -5159,34 +5299,57 @@ async def run_pregame(data: dict):
 								break
 
 				state_display = {
-					"": "(Picking)",
-					"selected": "(Hovering)",
-					"locked": "(Locked)"
-				}.get(state, "(Unknown)")
+					"": "Picking",
+					"selected": "Hovering",
+					"locked": "Locked",
+				}.get(state, "Unknown")
 
 				state_color = {
 					"": "yellow",
 					"selected": "blue",
-					"locked": "green"
+					"locked": "green",
 				}.get(state, "red")
+				state_markup = f"[{state_color}]{state_display}[/{state_color}]"
 
-				buffer.write(
-					f"{party_symbol}[{state_color}][LVL {player_level}][/{state_color}] {get_rank_color(rank, True)} {user_name}: {agent_name} {state_display}\n"
-				)
+				agent_display = agent_name if agent_name not in ("None", "", None) else "--"
+				level_label = f"[cyan]LVL {player_level}[/cyan]"
+				player_label = f"{party_symbol}{level_label} {user_name}"
+				rank_display = get_rank_color(rank, True)
 
-				kd, wins, avg, score = cache.get(str(ally_player["PlayerIdentity"]["Subject"]),
-				                                 ("Loading", "-", "Loading", "-"))
+				kd, wins, avg, score = cache.get(str(player_id), ("Loading", "-", "Loading", "-"))
 				kd_display = colorize_kd_stat(kd)
 				headshot_display = colorize_headshot_stat(avg)
 				score_display = colorize_score_stat(score)
-				buffer.write(f"  Player KD: {kd_display} | Headshot: {headshot_display} | Score: {score_display}\n")
-				buffer.write(f"[bright_magenta]  Past Matches: {''.join(wins)}[/bright_magenta]\n\n")
+				stats_display = f"KD {kd_display} | HS {headshot_display} | S {score_display}"
+
+				if isinstance(wins, list):
+					recent_text = "".join(wins)
+				else:
+					recent_text = str(wins)
+				if not recent_text or recent_text == "-":
+					recent_display = "[dim]--[/dim]"
+				else:
+					recent_display = f"[magenta]{recent_text}[/magenta]"
+
+				roster_table.add_row(
+					state_markup,
+					agent_display,
+					player_label,
+					rank_display,
+					stats_display,
+					recent_display,
+				)
+				roster_signature.append(
+					f"{player_id}|{state}|{agent_name}|{rank}|{player_level}|{kd}|{avg}|{score}|"
+					f"{recent_text}"
+				)
 
 			# -------------------------------------------------------
 			# Missing agents panel
 			# -------------------------------------------------------
 			all_by_role = get_all_agents_by_role()
 			selected_roles = {get_agent_role(aid) for aid in selected_agent_ids}
+			selected_agent_names = {get_agent_data_from_id(aid) for aid in selected_agent_ids}
 			missing_output_lines: List[str] = []
 
 			for role, agents in all_by_role.items():
@@ -5196,7 +5359,7 @@ async def run_pregame(data: dict):
 				if role in selected_roles:
 					continue
 				# Remove agents already picked
-				missing_agents = [a for a in agents if a not in [get_agent_data_from_id(i) for i in selected_agent_ids]]
+				missing_agents = [a for a in agents if a not in selected_agent_names]
 				if not missing_agents:
 					continue
 
@@ -5217,25 +5380,52 @@ async def run_pregame(data: dict):
 					missing_output_lines.append(f"[white]{role}:[/white] {names_str}")
 
 			if missing_output_lines:
-				buffer.write("[yellow]Missing Agents[/yellow]\n")
-				buffer.write("\n".join(missing_output_lines) + "\n\n")
+				missing_body = Text.from_markup("\n".join(missing_output_lines))
+				missing_panel = Panel(missing_body, title="Missing Roles", border_style="yellow")
+			else:
+				missing_panel = Panel(
+					"All core roles are covered.",
+					title="Missing Roles",
+					border_style="green",
+				)
 
+			roster_panel = Panel(roster_table, title="Roster", border_style="cyan")
 			got_rank = True
-			buffer.write(
-				f"[red]Enemy team: {match_data['EnemyTeamLockCount']}/{match_data['EnemyTeamSize']} LOCKED[/red]\n")
-			transitioning = False
-			if match_data["PhaseTimeRemainingNS"] == 0:
-				buffer.write(f"[cyan]In Loading Phase[/cyan]\n")
-				transitioning = True
 
-			render_output = buffer.getvalue()
+			transitioning = phase_remaining_ns == 0
+
+			signature_parts = [
+				map_name,
+				mode_name,
+				side,
+				str(phase_seconds),
+				str(ally_locked),
+				str(ally_total),
+				str(enemy_locked),
+				str(enemy_total),
+			]
+			signature_parts.extend(roster_signature)
+			if missing_output_lines:
+				signature_parts.extend(missing_output_lines)
+			else:
+				signature_parts.append("missing:none")
+
+			notification_display = None
+			if Notification.has_notifications():
+				notification_display = Notification.get_display()
+				notification_content = "\n".join(Notification.notifications)
+				signature_parts.append(notification_content)
+
 			# Hash the panel content so we only redraw when the payload changes.
-			signature = hashlib.sha1(render_output.encode("utf-8")).hexdigest()
+			signature = hashlib.sha1("|".join(signature_parts).encode("utf-8")).hexdigest()
 			if signature != last_signature:
 				state_changed = True
 				last_signature = signature
 				clear_console()
-				console.print(render_output, markup=True)
+				if notification_display is not None:
+					console.print(notification_display, markup=True)
+				console.print(Columns([summary_panel, roster_panel], expand=True, equal=True))
+				console.print(missing_panel)
 
 			# Feed the adaptive throttler (flagging transitions as changes).
 			throttler.record_iteration(state_changed or transitioning)
@@ -5613,7 +5803,8 @@ async def get_party(got_rank: dict = None):
 
 			if party_id:
 				party_data = await fetch_party_data(party_id)
-				party_size = len(party_data["Members"])
+				members = party_data.get("Members", [])
+				party_size = len(members)
 				for player_id, task in list(prefetch_tasks.items()):
 					if not task.done():
 						continue
@@ -5659,6 +5850,24 @@ async def get_party(got_rank: dict = None):
 						return "[dim]--[/dim]"
 					return score_markup
 
+				def _party_state_label(state_value: str) -> tuple[str, str]:
+					state_key = state_value.upper()
+					state_map = {
+						"DEFAULT": ("In Menu", "green"),
+						"MATCHMAKING": ("Queueing", "yellow"),
+						"MATCHMADE_GAME_STARTING": ("Match Found", "cyan"),
+						"CUSTOM_GAME_SETUP": ("Custom", "magenta"),
+						"POSTGAME": ("Postgame", "magenta"),
+					}
+					return state_map.get(state_key, ("Unknown", "dim"))
+
+				def _ready_markup(ready_state: Any) -> str:
+					if ready_state is True:
+						return "[green]READY[/green]"
+					if ready_state is False:
+						return "[yellow]WAIT[/yellow]"
+					return "[dim]--[/dim]"
+
 				def _schedule_prefetch(member: dict[str, Any]) -> None:
 					player_id = str(member.get("Subject", ""))
 					if not player_id:
@@ -5691,9 +5900,13 @@ async def get_party(got_rank: dict = None):
 
 					prefetch_tasks[player_id] = asyncio.create_task(_prefetch_async())
 
-				# Collect rows (badges, level, rank, score, name)
+				# Collect rows (badges, level, rank, score, ready, name)
 				rows: list[dict[str, str]] = []
-				for member in party_data.get("Members", []):
+				leader_name: str | None = None
+				self_ready: bool | None = None
+				ready_count = 0
+				ready_known = False
+				for member in members:
 					member_id = str(member["Subject"])
 					_schedule_prefetch(member)
 					player_name, is_user = get_userdata_from_id(member_id, val_uuid)
@@ -5703,6 +5916,16 @@ async def get_party(got_rank: dict = None):
 							player_name += f" {str(b64decode(role[0].encode()).decode())}"
 					is_leader = member.get("IsOwner", False)
 					player_lvl = str(member["PlayerIdentity"].get("AccountLevel", "-1"))
+					ready_state = member.get("IsReady")
+
+					if is_leader:
+						leader_name = player_name
+					if member_id == val_uuid:
+						self_ready = ready_state
+					if isinstance(ready_state, bool):
+						ready_known = True
+						if ready_state:
+							ready_count += 1
 
 					badges: list[str] = []
 					if is_leader:
@@ -5723,11 +5946,12 @@ async def get_party(got_rank: dict = None):
 						"level": _level_markup(player_lvl),
 						"rank": player_rank_str,
 						"score": score_markup,
+						"ready": _ready_markup(ready_state),
 						"name": player_name,
 					})
 
 				# Compute widths across rows
-				widths = {k: 0 for k in ("badges", "level", "rank", "score", "name")}
+				widths = {k: 0 for k in ("badges", "level", "rank", "score", "ready", "name")}
 				for r in rows:
 					for key in widths:
 						widths[key] = max(widths[key], _measure(r[key]))
@@ -5735,6 +5959,7 @@ async def get_party(got_rank: dict = None):
 				# Ensure minimal badge width using the header name
 				widths["badges"] = max(widths["badges"], _measure("[dim]BADGES[/dim]"))
 				widths["score"] = max(widths["score"], _measure("[dim]SCORE[/dim]"))
+				widths["ready"] = max(widths["ready"], _measure("[dim]READY[/dim]"))
 
 				# Render header and block lines
 				line_parts: list[str] = []
@@ -5743,6 +5968,7 @@ async def get_party(got_rank: dict = None):
 					"[dim]LVL[/dim]",
 					"[dim]RANK[/dim]",
 					"[dim]SCORE[/dim]",
+					"[dim]READY[/dim]",
 					"[dim]PLAYER[/dim]",
 				]
 
@@ -5757,7 +5983,8 @@ async def get_party(got_rank: dict = None):
 					_pad_cell(head_parts[1], widths["level"]),
 					_pad_cell(head_parts[2], widths["rank"]),
 					_pad_cell(head_parts[3], widths["score"]),
-					_pad_cell(head_parts[4], widths["name"]),
+					_pad_cell(head_parts[4], widths["ready"]),
+					_pad_cell(head_parts[5], widths["name"]),
 				])
 				total_width = len(head_line)
 				divider = f"[dim]{'\u2500' * total_width}[/dim]"
@@ -5769,24 +5996,53 @@ async def get_party(got_rank: dict = None):
 					pad_level = _pad_cell(r["level"], widths["level"])
 					pad_rank = _pad_cell(r["rank"], widths["rank"])
 					pad_score = _pad_cell(r["score"], widths["score"])
+					pad_ready = _pad_cell(r["ready"], widths["ready"])
 					pad_name = _pad_cell(r["name"], widths["name"])
-					line_parts.append(gap.join([pad_badges, pad_level, pad_rank, pad_score, pad_name]).rstrip())
+					line_parts.append(
+						gap.join([pad_badges, pad_level, pad_rank, pad_score, pad_ready, pad_name]).rstrip()
+					)
 
-				# Header line for mode/queue
+				# Build summary panel content
 				game_mode = str(party_data.get("MatchmakingData", {}).get("QueueID", "Unknown")).lower()
 				game_mode = GAME_MODES.get(game_mode.lower(), str(game_mode))
-				head = f"[green]Mode:[/green] {game_mode}"
+				state_label, state_color = _party_state_label(str(party_data.get("State", "UNKNOWN")))
+				state_markup = f"[{state_color}]{state_label}[/{state_color}]"
+				open_slots = max(0, 5 - party_size)
+				leader_display = leader_name if leader_name else "[dim]--[/dim]"
+				if ready_known and party_size > 0:
+					ready_text = f"{ready_count}/{party_size} ready"
+					ready_color = "green" if ready_count == party_size else "yellow"
+					ready_summary = f"[{ready_color}]{ready_text}[/{ready_color}]"
+					ready_signature = ready_text
+				else:
+					ready_summary = "[dim]--[/dim]"
+					ready_signature = "--"
+
+				summary_grid = Table.grid(padding=(0, 1))
+				summary_grid.add_column(justify="right", style="bold cyan")
+				summary_grid.add_column()
+				summary_grid.add_row("State", state_markup)
+				summary_grid.add_row("Mode", game_mode)
+				summary_grid.add_row("Party", f"{party_size}/5 ({open_slots} open)")
+				summary_grid.add_row("Ready", ready_summary)
+				summary_grid.add_row("Leader", leader_display)
+				if self_ready is not None:
+					summary_grid.add_row("You", _ready_markup(self_ready))
+
+				summary_panel = Panel(summary_grid, title="Party Status", border_style="green")
 				block_text = Text.from_markup("\n".join(line_parts)) if line_parts else Text(
 					"[dim]No party members[/dim]", justify="center")
-				party_panel = Panel(
+				roster_panel = Panel(
 					Align.center(block_text),
-					title="Party",
+					title="Roster",
 					border_style="cyan",
 					padding=(0, 1),
 				)
 
 				# For content-change detection, keep a plain string signature
-				party_section = f"{head}\n" + "\n".join(line_parts)
+				party_section = "\n".join(
+					[state_label, game_mode, str(party_size), ready_signature, leader_display] + line_parts
+				)
 
 				if Notification.has_notifications():
 					notification_display = Notification.get_display()
@@ -5799,8 +6055,7 @@ async def get_party(got_rank: dict = None):
 					clear_console()
 					if Notification.has_notifications():
 						console.print(notification_display, markup=True)
-					console.print(Text.from_markup(head))
-					console.print(Columns([party_panel], expand=True, equal=True))
+					console.print(Columns([summary_panel, roster_panel], expand=True))
 					last_rendered_content = new_screen_content
 
 				await asyncio.sleep(0.5)
@@ -5891,9 +6146,9 @@ async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 	if send_message:
 		console.print("\n\nChecking if player is in match")
 
-	state_manager = OFFLINE_STATE_MANAGER if OFFLINE_MODE else None
+	"""state_manager = OFFLINE_STATE_MANAGER if OFFLINE_MODE else None
 	if state_manager is not None:
-		state_manager.grant_replay()
+		state_manager.grant_replay()"""  # WTF is this for?
 
 	state = get_user_current_state(val_uuid)
 	if state == 3:
@@ -5910,8 +6165,8 @@ async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 					if input_task is None:
 						input_task = asyncio.create_task(listen_for_input())
 					await run_pregame(data)
-					if state_manager is not None:
-						state_manager.exhaust()
+					"""if state_manager is not None:
+						state_manager.exhaust()"""
 					return True
 			elif r.status_code == 400:
 				logger.log(3, "Loading check_pregame -> log_in")
@@ -5929,12 +6184,12 @@ async def check_if_user_in_pregame(send_message: bool = False) -> bool:
 			                headers=internal_api_headers)
 			return_code = r.status_code
 			if return_code == 200:
-				clear_console()
-				logger.log(3, "Loading check_pregame -> in_game")
-				Notification.clear_notifications()
-				await run_in_game()
-				if state_manager is not None:
-					state_manager.exhaust()
+				logger.log(3, "Loading check_pregame -> check_ingame")
+				game_data = r.json()
+				# Notification.clear_notifications()  | Move to run_in_game after check to make sure the game hasn't ended
+				await run_in_game(game_data)
+				"""if state_manager is not None:
+					state_manager.exhaust()"""
 				return True
 			elif return_code == 400:
 				logger.log(3, "Loading check_pregame -> log_in")
@@ -5972,9 +6227,10 @@ def _resolve_menu_action(user_input: str) -> str | None:
 		return "loader"
 	if normalized in {"settings", "setup", "config", "preferences"}:
 		return "settings"
+	if normalized in {"help", "h", "?"}:
+		return "help"
 	if normalized in {"exit", "quit", "close", "leave", "e", "q", "c", "l"}:
-		_print_exit_message()
-		sys.exit(0)
+		return "close"
 	return None
 
 
@@ -5988,24 +6244,38 @@ def _prompt_menu_action(default_action: str) -> str | None:
 
 	if default_action == "manual":
 		console.print(
-			"\n(1) Valorant Shop, (2) In-Game Loader\nType 'settings' to adjust preferences."
+			"\n(1) Valorant Shop, (2) In-Game Loader\n"
+			"Type 'settings' to adjust preferences or 'help' for commands."
 		)
 		return _resolve_menu_action(input("> ").strip())
 
-	pretty_default = "Valorant Shop" if default_action == "shop" else "In-Game Loader"
+	pretty_default = _pretty_menu_action_label(default_action)
 	console.print(
 		f"\nDefault action: {pretty_default}. Press Enter to continue, "
-		"type 'menu' to choose manually, or 'settings' to open configuration."
+		"type 'menu' to choose manually, 'settings' to open configuration, "
+		"or 'help' for commands."
 	)
 	choice = input("> ").strip().lower()
 	if not choice:
 		return default_action
 	if choice in {"menu", "m", "manual"}:
 		console.print(
-			"\n(1) Valorant Shop, (2) In-Game Loader\nType 'settings' to adjust preferences."
+			"\n(1) Valorant Shop, (2) In-Game Loader\n"
+			"Type 'settings' to adjust preferences or 'help' for commands."
 		)
 		choice = input("> ").strip()
 	return _resolve_menu_action(choice)
+
+
+def display_main_menu_help() -> None:
+	"""Render a help panel for the main menu commands."""
+	table = Table(show_header=False, box=None, show_lines=True, row_styles=["cyan", "dim"])
+	table.add_row("1 / shop / store", "Open Valorant Shop", end_section=True)
+	table.add_row("2 / loader / in-game", "Open In-Game Loader", end_section=True)
+	table.add_row("settings / setup / config", "Adjust preferences", end_section=True)
+	table.add_row("help / h / ?", "Show this help", end_section=True)
+	table.add_row("exit / quit / close", "Exit Zoro", end_section=True)
+	console.print(Panel(table, title="Main Menu Help", border_style="cyan"))
 
 
 async def _run_manual_loader_sequence() -> None:
@@ -6022,17 +6292,74 @@ async def _run_manual_loader_sequence() -> None:
 			console.clear()
 
 
+def _pretty_menu_action_label(action: str) -> str:
+	labels = {
+		"manual": "Manual",
+		"shop": "Valorant Shop",
+		"loader": "In-Game Loader",
+	}
+	return labels.get(action, action.title())
+
+
+def _resolve_rpc_status(config_main: Optional[configparser.SectionProxy]) -> str:
+	if config_main is None:
+		return "Unknown"
+	enabled = config_main.get("use_discord_rich_presence", "true").strip().lower() == "true"
+	args_obj = globals().get("args")
+	if args_obj and getattr(args_obj, "no_rpc", False):
+		enabled = False
+	return "Enabled" if enabled else "Disabled"
+
+
+def _build_session_panel(name: str, tag: str) -> Panel:
+	config_main = globals().get("config_main")
+	session_grid = Table.grid(padding=(0, 1))
+	session_grid.add_column(justify="right", style="bold cyan")
+	session_grid.add_column()
+	session_grid.add_row("Account", f"{name}#{tag}")
+	session_grid.add_row("Version", VERSION)
+	session_grid.add_row("Default", _pretty_menu_action_label(DEFAULT_MENU_ACTION))
+	session_grid.add_row("Discord RPC", _resolve_rpc_status(config_main))
+	session_grid.add_row("Debug", "On" if DEBUG else "Off")
+
+	args_obj = globals().get("args")
+	if args_obj and getattr(args_obj, "offline", False):
+		session_grid.add_row("Offline", getattr(args_obj, "offline_state", "menus"))
+	if args_obj and getattr(args_obj, "store", False):
+		store_label = "Auto-start" if getattr(args_obj, "_store_from_config", False) else "Active"
+		session_grid.add_row("Store Mode", store_label)
+	elif STORE_ONLY_MODE:
+		session_grid.add_row("Store Mode", "Auto-start")
+
+	return Panel(session_grid, title="Session", border_style="blue")
+
+
+def _build_quick_actions_panel() -> Panel:
+	actions_grid = Table.grid(padding=(0, 1))
+	actions_grid.add_column()
+	if DEFAULT_MENU_ACTION != "manual":
+		actions_grid.add_row(
+			f"[bold]Enter[/bold] {_pretty_menu_action_label(DEFAULT_MENU_ACTION)}"
+		)
+	actions_grid.add_row("[bold]1[/bold] Valorant Shop")
+	actions_grid.add_row("[bold]2[/bold] In-Game Loader")
+	actions_grid.add_row("[bold]settings[/bold] Preferences")
+	actions_grid.add_row("[bold]help[/bold] Menu help")
+	actions_grid.add_row("[bold]exit[/bold] Quit Zoro")
+	return Panel(actions_grid, title="Quick Actions", border_style="magenta")
+
+
 def main_display():
 	"""Display the main banner and version information."""
 	banner = Panel(
-		f"[cyan bold]{BANNER}[/cyan bold]",
+		BANNER,
 		title="Welcome",
 		title_align="left",
-		border_style="blue",
+		border_style="#5B1F27",
 	)
 	console.print(banner)
 
-	version_info = f"[bold cyan]Version:[/bold cyan] [green]{VERSION}[/green]"
+	version_info = f"[bold #9AA4B2]Version:[/bold #9AA4B2] [bold #FF4655]{VERSION}[/bold #FF4655]"
 	console.print(version_info)
 
 
@@ -6040,31 +6367,89 @@ def _print_exit_message() -> None:
 	console.print("[bold yellow]Exiting...[/bold yellow]")
 
 
-async def display_logged_in_status(name: str) -> None:
+async def display_logged_in_status(name: str, tag: str) -> None:
 	"""Display the logged-in status with a welcome message."""
 	console.clear()
 	main_display()
-	console.print(f"\n[bold green]You have been logged in! Welcome, {name}[/bold green]")
+	console.print(f"\n[bold green]Signed in as {name}#{tag}. Welcome back![/bold green]")
+	session_panel = _build_session_panel(name, tag)
+	actions_panel = _build_quick_actions_panel()
+	console.print(Columns([session_panel, actions_panel], equal=True, expand=True))
 
 
 async def display_friend_states(friend_states: list) -> None:
 	"""Display the friend states in a formatted table."""
 	if not friend_states:
-		console.print("[bold red]No friends online.[/bold red]")
-	else:
-		table = Table(title="Friend States", show_header=True, header_style="bold magenta")
-		table.add_column("Friend", style="cyan")
-		table.add_column("Status", style="green")
-		for friend_state in friend_states:
-			friend_name, status = friend_state.split(":")
-			table.add_row(friend_name, status)
-		console.print(table)
+		console.print(
+			Panel(
+				"No friends are currently in Valorant.\n",
+				title="Friend States",
+				border_style="red",
+			)
+		)
+		return
+
+	parsed_states: list[tuple[str, str]] = []
+	for friend_state in friend_states:
+		if ":" in friend_state:
+			friend_name, status = friend_state.split(":", 1)
+		else:
+			friend_name, status = friend_state, "Unknown"
+		parsed_states.append((friend_name.strip(), status.strip()))
+
+	status_order = {
+		"In-game": 0,
+		"Pre-game": 1,
+		"Queueing": 2,
+		"In Menu": 3,
+		"Replay": 4,
+		"Unknown": 5,
+		"Unknown State": 6,
+	}
+	status_colors = {
+		"In-game": "red",
+		"Pre-game": "yellow",
+		"Queueing": "yellow",
+		"In Menu": "green",
+		"Replay": "cyan",
+		"Unknown": "dim",
+		"Unknown State": "dim",
+	}
+	parsed_states.sort(key=lambda item: (status_order.get(item[1], 99), item[0].lower()))
+
+	table = Table(
+		title=f"Friend States ({len(parsed_states)} online)",
+		show_header=True,
+		header_style="bold magenta",
+		box=box.SIMPLE,
+	)
+	table.add_column("Friend", style="cyan")
+	table.add_column("Status", justify="right")
+	for friend_name, status in parsed_states:
+		color = status_colors.get(status, "white")
+		table.add_row(friend_name, f"[{color}]{status}[/{color}]")
+	console.print(table)
 
 
 async def main() -> bool:
 	global ValorantShop, Notification, RPC
 	clear_console()
 	main_display()
+
+	disclaimer_status, disclaimer_id = check_disclaimer(True)
+	if disclaimer_status != 1:
+		if disclaimer_status == 0 or disclaimer_status == 2:
+			console.print("[bold yellow]Updated Disclaimer[/bold yellow]")
+			console.print("[yellow]Please review again[/yellow]")
+			time.sleep(1)
+			agree_to_disclaimer(disclaimer_id)
+		elif disclaimer_status == 3:
+			console.print("[bold red]Error: Failed to get remote config (-13)[/bold red]")
+			return False
+		elif disclaimer_status == 4:
+			console.print("[bold red]Error: Failed to get local config (-14)[/bold red]")
+			return False
+
 	console.print("[yellow]One moment while we sign you in...[/yellow]\n")
 
 	try:
@@ -6117,7 +6502,7 @@ async def main() -> bool:
 
 		while True:
 			try:
-				await display_logged_in_status(name)
+				await display_logged_in_status(name, tag)
 
 				# Kill input thread
 				if input_task is not None:
@@ -6153,6 +6538,10 @@ async def main() -> bool:
 							except RuntimeError as exc:
 								console.print(Panel(str(exc), style="bold red"))
 						await asyncio.sleep(1.0)
+					elif action == "help":
+						display_main_menu_help()
+						if sys.stdin and sys.stdin.isatty():
+							input("Press enter to return to the menu...")
 					elif action == "close":
 						_print_exit_message()
 						return False
@@ -6191,17 +6580,11 @@ async def main() -> bool:
 	return True
 
 
-import platform
-
-# --- Console window helpers (Windows only) ---
-_CONSOLE_HWND = None
-
-
 def _get_console_hwnd():
 	"""Return the Windows console HWND or None on non-Windows."""
 	global _CONSOLE_HWND
 	try:
-		if platform.system() != "Windows":
+		if system() != "Windows":
 			return None
 		import ctypes  # local import to avoid issues on non-Windows
 		user32 = ctypes.WinDLL('user32')
@@ -6214,7 +6597,7 @@ def _get_console_hwnd():
 def hide_console():
 	"""Hide the console window (no-op on non-Windows)."""
 	try:
-		if platform.system() != "Windows":
+		if system() != "Windows":
 			return
 		import ctypes
 		user32 = ctypes.WinDLL('user32')
@@ -6232,7 +6615,7 @@ def hide_console():
 def show_console():
 	"""Show and focus the console window (no-op on non-Windows)."""
 	try:
-		if platform.system() != "Windows":
+		if system() != "Windows":
 			return
 		import ctypes
 		user32 = ctypes.WinDLL('user32')
@@ -6249,6 +6632,20 @@ def show_console():
 
 
 if __name__ == "__main__":
+	VERSION += f"-{BUILD_BRANCH}"
+
+	console = Console()
+	pretty.install()
+
+	if not os.path.exists(DATA_PATH) and DEBUG:
+		os.mkdir(DATA_PATH)
+
+	logger = Logger("Zoro", "logs/Zoro", ".log")
+	logger.load_public_key(pub_key)
+	install_global_exception_handlers(logger)
+
+	REMOTE_CONFIG = load_config()
+
 	parser = argparse.ArgumentParser(add_help=True)
 	parser.add_argument("--debug", action="store_true", help="Enable debug mode")
 	parser.add_argument("--no-rpc", action="store_true", help="Disable Discord Rich Presence")
@@ -6277,7 +6674,10 @@ if __name__ == "__main__":
 	atexit.register(instance_guard.release)
 
 	# Set console title
-	console.set_window_title(f"Zoro {VERSION}")
+	window_title = f"Zoro {VERSION}"
+	if DEV:
+		window_title += " - Developer"
+	console.set_window_title(f"{window_title}")
 
 	if args.version:
 		console.print(f"Zoro Version: {VERSION}")
@@ -6339,9 +6739,6 @@ if __name__ == "__main__":
 	# Common initialization before launching UI/CLI
 	clear_console()
 	colorama.init(autoreset=True)
-	logger = Logger("Zoro", "logs/Zoro", ".log")
-	logger.load_public_key(pub_key)
-	install_global_exception_handlers(logger)
 
 	if setup_invoked:
 		logger.info(
